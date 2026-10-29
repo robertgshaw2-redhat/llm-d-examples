@@ -1,0 +1,169 @@
+# One EPP per phase. Each lists its pod twice, once per data-parallel rank:
+# both entries share the pod's address and port and differ only in the dpRank
+# attribute, which endpoint-header-stamper writes to x-data-parallel-rank.
+# The vLLM Rust frontend reads that header and dispatches to that engine rank.
+#
+# The endpoint files live in the rdp-endpoints ConfigMap, generated from the
+# pod IPs by render-endpoints.sh. watchFile picks up ConfigMap updates
+# without an EPP restart.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rdp-epp
+data:
+  prefill.yaml: |
+    apiVersion: llm-d.ai/v1
+    kind: EndpointPickerConfig
+    plugins:
+      - type: file-discovery
+        parameters: {path: /etc/endpoints/prefill.yaml, watchFile: true}
+      - type: openai-parser
+      - type: attributes-producer
+        parameters: {attributeKeys: [dpRank]}
+      - type: endpoint-header-stamper
+        parameters:
+          stamps:
+            - {attributeKey: dpRank, headerName: x-data-parallel-rank}
+      - type: inflight-load-producer
+      - type: active-request-scorer
+      - type: max-score-picker
+      - type: single-profile-handler
+    dataLayer:
+      discovery:
+        endpoints: {pluginRef: file-discovery}
+    requestHandler:
+      parsers:
+        - pluginRef: openai-parser
+    schedulingProfiles:
+      - name: default
+        plugins:
+          - pluginRef: active-request-scorer
+          - pluginRef: max-score-picker
+  decode.yaml: |
+    apiVersion: llm-d.ai/v1
+    kind: EndpointPickerConfig
+    plugins:
+      - type: file-discovery
+        parameters: {path: /etc/endpoints/decode.yaml, watchFile: true}
+      - type: openai-parser
+      - type: attributes-producer
+        parameters: {attributeKeys: [dpRank]}
+      - type: endpoint-header-stamper
+        parameters:
+          stamps:
+            - {attributeKey: dpRank, headerName: x-data-parallel-rank}
+      - type: inflight-load-producer
+      - type: active-request-scorer
+      - type: max-score-picker
+      - type: single-profile-handler
+    dataLayer:
+      discovery:
+        endpoints: {pluginRef: file-discovery}
+    requestHandler:
+      parsers:
+        - pluginRef: openai-parser
+    schedulingProfiles:
+      - name: default
+        plugins:
+          - pluginRef: active-request-scorer
+          - pluginRef: max-score-picker
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rdp-epp-prefill
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: rdp-epp-prefill}
+  template:
+    metadata:
+      labels: {app: rdp-epp-prefill}
+    spec:
+      containers:
+        - name: epp
+          # endpoint-header-stamper is newer than v1.0.0: a main build (commit b6f93f55),
+          # pinned by digest.
+          image: ghcr.io/llm-d/llm-d-router-endpoint-picker@sha256:688e4d95271da27c11af59fa1ca89110c4cc53c47ad7af35ac964dcb900fc48e
+          args:
+            - --pool-name=rdp-prefill
+            - --config-file=/etc/epp/prefill.yaml
+            - --secure-serving=false
+            - --metrics-endpoint-auth=false
+            - --allow-experimental-plugins=true
+            - --grpc-port=9002
+            - --grpc-health-port=9003
+            - --v=4
+          ports:
+            - {containerPort: 9002, name: grpc}
+            - {containerPort: 9003, name: grpc-health}
+            - {containerPort: 9090, name: metrics}
+          readinessProbe:
+            grpc: {port: 9003, service: readiness}
+            periodSeconds: 5
+          volumeMounts:
+            - {mountPath: /etc/epp, name: config}
+            - {mountPath: /etc/endpoints, name: endpoints}
+      volumes:
+        - name: config
+          configMap: {name: rdp-epp}
+        - name: endpoints
+          configMap: {name: rdp-endpoints}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rdp-epp-decode
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: rdp-epp-decode}
+  template:
+    metadata:
+      labels: {app: rdp-epp-decode}
+    spec:
+      containers:
+        - name: epp
+          image: ghcr.io/llm-d/llm-d-router-endpoint-picker@sha256:688e4d95271da27c11af59fa1ca89110c4cc53c47ad7af35ac964dcb900fc48e
+          args:
+            - --pool-name=rdp-decode
+            - --config-file=/etc/epp/decode.yaml
+            - --secure-serving=false
+            - --metrics-endpoint-auth=false
+            - --allow-experimental-plugins=true
+            - --grpc-port=9002
+            - --grpc-health-port=9003
+            - --v=4
+          ports:
+            - {containerPort: 9002, name: grpc}
+            - {containerPort: 9003, name: grpc-health}
+            - {containerPort: 9090, name: metrics}
+          readinessProbe:
+            grpc: {port: 9003, service: readiness}
+            periodSeconds: 5
+          volumeMounts:
+            - {mountPath: /etc/epp, name: config}
+            - {mountPath: /etc/endpoints, name: endpoints}
+      volumes:
+        - name: config
+          configMap: {name: rdp-epp}
+        - name: endpoints
+          configMap: {name: rdp-endpoints}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rdp-epp-prefill
+spec:
+  selector: {app: rdp-epp-prefill}
+  ports:
+    - {name: grpc, port: 9002}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rdp-epp-decode
+spec:
+  selector: {app: rdp-epp-decode}
+  ports:
+    - {name: grpc, port: 9002}
