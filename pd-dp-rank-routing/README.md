@@ -7,7 +7,8 @@ rank.
 
 The routing comes from llm-d-router branch
 [`epp-dp-rank-header`](https://github.com/robertgshaw2-redhat/llm-d-router/tree/epp-dp-rank-header)
-(issue [llm-d/llm-d-router#3757](https://github.com/llm-d/llm-d-router/issues/3757)):
+(issue [llm-d/llm-d-router#3757](https://github.com/llm-d/llm-d-router/issues/3757), PR
+[llm-d/llm-d-router#3761](https://github.com/llm-d/llm-d-router/pull/3761)):
 
 | Piece | What it does |
 |---|---|
