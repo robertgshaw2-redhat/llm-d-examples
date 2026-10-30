@@ -40,19 +40,21 @@ client                                         client
 | `coordinator/` | vLLM pods, two InferencePools and EPPs (one per phase), Envoy, coordinator, `deploy.sh`, `demo.sh`, `teardown.sh` |
 | `sidecar/` | vLLM pods (the decode pod runs the routing sidecar), one InferencePool and EPP with `disagg-profile-handler`, Envoy, `deploy.sh`, `demo.sh`, `teardown.sh` |
 | `mixed/` | Coordinator P/D with prefill DP=2 and decode DP=4 in one InferencePool behind one EPP (`header-profile-handler`), rank counts set per pod with the `llm-d.ai/data-parallel-size-local` annotation, `deploy.sh`, `demo.sh`, `teardown.sh` |
+| `kvevents/` | The `multinode/` layout with vLLM KV events and the precise prefix cache (token-producer with a `vllm launch render` sidecar), plus a per-rank load test, `deploy.sh`, `demo.sh`, `teardown.sh` |
 | `multinode/` | Coordinator P/D where each phase is one DP=4 group over two pods (LeaderWorkerSet, 2 ranks per pod), EPPs with `--data-parallel-start-rank-label`, `deploy.sh`, `demo.sh`, `teardown.sh` |
 
 ## Prerequisites
 
 - A Kubernetes cluster with the InferencePool CRD (`inference.networking.k8s.io/v1`) and 4 free
-  NVIDIA GPUs per demo (2 per vLLM pod; 6 for `mixed/`, 8 for `multinode/`). Tested on H200s.
-- For `multinode/`: the LeaderWorkerSet CRD (`leaderworkerset.x-k8s.io/v1`).
+  NVIDIA GPUs per demo (2 per vLLM pod; 6 for `mixed/`, 8 for `multinode/` and `kvevents/`). Tested on H200s.
+- For `multinode/` and `kvevents/`: the LeaderWorkerSet CRD (`leaderworkerset.x-k8s.io/v1`).
 - Images:
   - `docker.io/vllm/vllm-openai:v0.32.0`
   - `ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6`, built from the
     branch above at `a61396f6` with `make image-build-epp TARGETARCH=amd64`
   - `ghcr.io/robertgshaw2-redhat/llm-d-router-disagg-sidecar:dp-rank-851a0215`, built at `851a0215`
     with `make image-build-sidecar TARGETARCH=amd64` (later commits do not change the sidecar)
+  - `docker.io/vllm/vllm-openai-cpu:v0.31.0` for the `kvevents/` render sidecar
   - `docker.io/envoyproxy/envoy:distroless-v1.33.2`, `ghcr.io/llm-d/llm-d-router-coordinator:v1.0.0`
 - Outbound access to Hugging Face for the model (about 30 GB per pod; the cache is an `emptyDir`).
 
@@ -67,6 +69,7 @@ Each script uses the current kubectl context and namespace; set `CTX` and `NS` t
 ./coordinator/deploy.sh && ./coordinator/demo.sh
 ./sidecar/deploy.sh && ./sidecar/demo.sh
 ./mixed/deploy.sh && ./mixed/demo.sh
+./kvevents/deploy.sh && ./kvevents/demo.sh
 ./multinode/deploy.sh && ./multinode/demo.sh
 ```
 
@@ -113,6 +116,58 @@ the reuse. The decode pod's prompt tokens all come from `external_kv_transfer`, 
 ## Sidecar demo output
 
 Not run yet. The sidecar demo deploys, but its run is pending a public sidecar image.
+
+## KV events and load demo output
+
+Same layout as `multinode/` (each phase one DP=4 group over two pods, 2 ranks per pod). vLLM
+publishes KV events on `tcp://*:5557`, which it offsets by each engine's global rank; no per-pod
+port adjustment. Both EPPs run the precise prefix cache with a `token-producer` backed by a
+`vllm launch render` sidecar, plus `queue-scorer` and `running-requests-size-scorer`. Decode runs
+`--max-num-seqs 8` so a flooded engine builds a waiting queue. EPP image built at `a61396f6`.
+
+- Section 2 sends a prompt straight to one prefill engine (bypassing the EPP), then sends the
+  same prompt through the coordinator. Only that engine's KV events contain its blocks, so the
+  prefill EPP routes it back there.
+- Section 3 sends 40 long requests straight to decode engine 0, then 6 requests through the
+  coordinator. Rank 0's own `engine="0"` queue is high while rank 1 on the same pod reads 0, so
+  the decode EPP avoids rank 0.
+
+```
+== 1. KV-event subscribers: one per rank endpoint, at 5557 + global rank
+  dpk-prefill-0-1-rank-0 -> tcp://10.0.5.104:5559
+  dpk-prefill-0-1-rank-1 -> tcp://10.0.5.104:5560
+  dpk-prefill-0-rank-0 -> tcp://10.0.5.203:5557
+  dpk-prefill-0-rank-1 -> tcp://10.0.5.203:5558
+
+== 2. A prompt warmed on one engine routes back to that engine (precise prefix cache)
+-- warmed on prefill engine 2, routed to:
+  profile=prefill dprank=2 upstream=10.0.5.104:8000
+-- warmed on prefill engine 0, routed to:
+  profile=prefill dprank=0 upstream=10.0.5.203:8000
+-- warmed on prefill engine 3, routed to:
+  profile=prefill dprank=3 upstream=10.0.5.104:8000
+-- warmed on prefill engine 1, routed to:
+  profile=prefill dprank=1 upstream=10.0.5.203:8000
+-- KV-event batches received per subscriber
+  llm_d_epp_kv_cache_events_messages_received_total{pod_identifier="robshaw-dev/dpk-prefill-0-1-rank-0"} 2
+  llm_d_epp_kv_cache_events_messages_received_total{pod_identifier="robshaw-dev/dpk-prefill-0-1-rank-1"} 2
+  llm_d_epp_kv_cache_events_messages_received_total{pod_identifier="robshaw-dev/dpk-prefill-0-rank-0"} 2
+  llm_d_epp_kv_cache_events_messages_received_total{pod_identifier="robshaw-dev/dpk-prefill-0-rank-1"} 2
+
+== 3. A flooded decode engine is avoided (per-rank queue metrics)
+-- decode EPP per-rank queue while engine 0 is flooded
+  llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpk-decode-0-1-rank-0",name="dpk-decode"} 0
+  llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpk-decode-0-1-rank-1",name="dpk-decode"} 0
+  llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpk-decode-0-rank-0",name="dpk-decode"} 24
+  llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpk-decode-0-rank-1",name="dpk-decode"} 0
+-- decode ranks picked for 6 new requests
+  profile=decode dprank=2 upstream=10.0.9.19:8000
+  profile=decode dprank=3 upstream=10.0.9.19:8000
+  profile=decode dprank=1 upstream=10.0.7.132:8000
+  profile=decode dprank=2 upstream=10.0.9.19:8000
+  profile=decode dprank=3 upstream=10.0.9.19:8000
+  profile=decode dprank=1 upstream=10.0.7.132:8000
+```
 
 ## Mixed DP sizes demo output
 
@@ -253,5 +308,6 @@ counters move. Decode reads every prompt from prefill over NIXL across pods.
 ./coordinator/teardown.sh
 ./sidecar/teardown.sh
 ./mixed/teardown.sh
+./kvevents/teardown.sh
 ./multinode/teardown.sh
 ```

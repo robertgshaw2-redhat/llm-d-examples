@@ -1,0 +1,208 @@
+# Multi-node P/D with precise prefix-cache scoring. Each EPP subscribes to
+# every rank endpoint's KV events at 5557 + its global data-parallel rank and
+# keys the index per rank. Scoring also uses each rank's own queue and
+# running-request metrics (engine="<global rank>").
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: dpk-prefill
+spec:
+  selector:
+    matchLabels: {app: dpk-vllm, llm-d.ai/role: prefill}
+  targetPorts:
+    - number: 8000
+  endpointPickerRef:
+    name: dpk-epp-prefill
+    port: {number: 9002}
+---
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: dpk-decode
+spec:
+  selector:
+    matchLabels: {app: dpk-vllm, llm-d.ai/role: decode}
+  targetPorts:
+    - number: 8000
+  endpointPickerRef:
+    name: dpk-epp-decode
+    port: {number: 9002}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dpk-epp
+data:
+  config.yaml: |
+    apiVersion: llm-d.ai/v1
+    kind: EndpointPickerConfig
+    plugins:
+      - type: openai-parser
+      - type: data-parallel-rank-header
+      - type: token-producer
+        parameters:
+          modelName: deepseek-ai/DeepSeek-V2-Lite
+          vllm:
+            url: "http://localhost:8100"
+      - type: endpoint-notification-source
+      - type: precise-prefix-cache-producer
+        parameters:
+          tokenProcessorConfig:
+            blockSize: 64
+          indexerConfig:
+            kvBlockIndexConfig:
+              enableMetrics: true
+          kvEventsConfig:
+            topicFilter: "kv@"
+            discoverPods: true
+            podDiscoveryConfig:
+              socketPort: 5557
+      - type: prefix-cache-scorer
+        parameters:
+          prefixMatchInfoProducerName: precise-prefix-cache-producer
+      - type: queue-scorer
+      - type: running-requests-size-scorer
+      - type: max-score-picker
+      - type: single-profile-handler
+    requestHandler:
+      parsers:
+        - pluginRef: openai-parser
+    dataLayer:
+      sources:
+        - pluginRef: endpoint-notification-source
+          extractors:
+            - pluginRef: precise-prefix-cache-producer
+    schedulingProfiles:
+      - name: default
+        plugins:
+          - pluginRef: prefix-cache-scorer
+            weight: 3
+          - pluginRef: queue-scorer
+            weight: 2
+          - pluginRef: running-requests-size-scorer
+            weight: 2
+          - pluginRef: max-score-picker
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpk-epp-prefill
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dpk-epp-prefill}
+  template:
+    metadata:
+      labels: {app: dpk-epp-prefill}
+    spec:
+      serviceAccountName: dpk-epp
+      containers:
+        - name: epp
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6
+          imagePullPolicy: Always
+          args:
+            - --pool-name=dpk-prefill
+            - --pool-namespace=$(NAMESPACE)
+            - --config-file=/etc/epp/config.yaml
+            - --data-parallel-size-local=2
+            - --data-parallel-start-rank-label=leaderworkerset.sigs.k8s.io/worker-index
+            - --secure-serving=false
+            - --metrics-endpoint-auth=false
+            - --allow-experimental-plugins=true
+            - --grpc-port=9002
+            - --grpc-health-port=9003
+            - --v=4
+          env:
+            - name: NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+          ports:
+            - {containerPort: 9002, name: grpc}
+            - {containerPort: 9003, name: grpc-health}
+            - {containerPort: 9090, name: metrics}
+          readinessProbe:
+            grpc: {port: 9003, service: readiness}
+            periodSeconds: 5
+          volumeMounts:
+            - {mountPath: /etc/epp, name: config}
+        # Renders prompts to token IDs for the token-producer.
+        - name: vllm-render
+          image: docker.io/vllm/vllm-openai-cpu:v0.31.0
+          command: [vllm, launch, render]
+          args: [deepseek-ai/DeepSeek-V2-Lite, --port=8100]
+          ports:
+            - {containerPort: 8100, name: render-http}
+      volumes:
+        - name: config
+          configMap: {name: dpk-epp}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dpk-epp-prefill
+spec:
+  selector: {app: dpk-epp-prefill}
+  ports:
+    - {name: grpc, port: 9002}
+    - {name: metrics, port: 9090}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpk-epp-decode
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dpk-epp-decode}
+  template:
+    metadata:
+      labels: {app: dpk-epp-decode}
+    spec:
+      serviceAccountName: dpk-epp
+      containers:
+        - name: epp
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6
+          imagePullPolicy: Always
+          args:
+            - --pool-name=dpk-decode
+            - --pool-namespace=$(NAMESPACE)
+            - --config-file=/etc/epp/config.yaml
+            - --data-parallel-size-local=2
+            - --data-parallel-start-rank-label=leaderworkerset.sigs.k8s.io/worker-index
+            - --secure-serving=false
+            - --metrics-endpoint-auth=false
+            - --allow-experimental-plugins=true
+            - --grpc-port=9002
+            - --grpc-health-port=9003
+            - --v=4
+          env:
+            - name: NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+          ports:
+            - {containerPort: 9002, name: grpc}
+            - {containerPort: 9003, name: grpc-health}
+            - {containerPort: 9090, name: metrics}
+          readinessProbe:
+            grpc: {port: 9003, service: readiness}
+            periodSeconds: 5
+          volumeMounts:
+            - {mountPath: /etc/epp, name: config}
+        # Renders prompts to token IDs for the token-producer.
+        - name: vllm-render
+          image: docker.io/vllm/vllm-openai-cpu:v0.31.0
+          command: [vllm, launch, render]
+          args: [deepseek-ai/DeepSeek-V2-Lite, --port=8100]
+          ports:
+            - {containerPort: 8100, name: render-http}
+      volumes:
+        - name: config
+          configMap: {name: dpk-epp}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dpk-epp-decode
+spec:
+  selector: {app: dpk-epp-decode}
+  ports:
+    - {name: grpc, port: 9002}
+    - {name: metrics, port: 9090}
