@@ -1,0 +1,58 @@
+# SGLang multi-node with per-rank listeners (SGLANG_RUST_SERVER=1): one
+# DP-attention group (DP=4, TP=4) over two pods with 2 GPUs each. Every DP rank
+# serves HTTP on 8000 + its node-local rank on its own pod, so pod k serves
+# global ranks 2k and 2k+1 on ports 8000 and 8001. SGLang offsets KV-event
+# ports by the global rank, so each pod lowers its base by 2k to publish on
+# 5557 + node-local rank.
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: dpr-sglang
+spec:
+  replicas: 1
+  leaderWorkerTemplate:
+    size: 2
+    workerTemplate:
+      metadata:
+        labels: {app: dpr-sglang, llm-d.ai/engine-type: sglang}
+      spec:
+        tolerations:
+          - {key: is_gpu, operator: Exists, effect: PreferNoSchedule}
+        containers:
+          - name: sglang
+            image: docker.io/lmsysorg/sglang:v0.5.22
+            command: ["/bin/bash", "-c"]
+            args:
+              - |-
+                set -euo pipefail
+                KV_BASE=$(( 5557 - ${LWS_WORKER_INDEX:-0} * 2 ))
+                exec python3 -m sglang.launch_server \
+                  --model-path deepseek-ai/DeepSeek-V2-Lite \
+                  --trust-remote-code \
+                  --host 0.0.0.0 --port 8000 \
+                  --tp-size 4 --dp-size 4 --enable-dp-attention \
+                  --nnodes 2 --node-rank ${LWS_WORKER_INDEX:-0} \
+                  --dist-init-addr ${LWS_LEADER_ADDRESS}:5000 \
+                  --context-length 16384 \
+                  --enable-metrics \
+                  --kv-events-config '{"publisher":"zmq","endpoint":"tcp://*:'"$KV_BASE"'","topic":"kv"}'
+            env:
+              - {name: SGLANG_RUST_SERVER, value: "1"}
+              - {name: HF_HUB_CACHE, value: /var/cache/huggingface}
+              - {name: NCCL_IB_HCA, value: ibp}
+            ports:
+              - {containerPort: 8000, name: http-rank0}
+              - {containerPort: 8001, name: http-rank1}
+            resources:
+              requests: {cpu: "16", memory: 128Gi, nvidia.com/gpu: "2", rdma/ib: "2"}
+              limits: {memory: 128Gi, nvidia.com/gpu: "2", rdma/ib: "2"}
+            securityContext:
+              capabilities: {add: [IPC_LOCK, SYS_RAWIO]}
+            volumeMounts:
+              - {mountPath: /dev/shm, name: dshm}
+              - {mountPath: /var/cache/huggingface, name: hf-cache}
+        volumes:
+          - name: dshm
+            emptyDir: {medium: Memory, sizeLimit: 16Gi}
+          - name: hf-cache
+            emptyDir: {}

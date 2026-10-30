@@ -42,20 +42,23 @@ client                                         client
 | `mixed/` | Coordinator P/D with prefill DP=2 and decode DP=4 in one InferencePool behind one EPP (`header-profile-handler`), rank counts set per pod with the `llm-d.ai/data-parallel-size-local` annotation, `deploy.sh`, `demo.sh`, `teardown.sh` |
 | `kvevents/` | The `multinode/` layout with vLLM KV events and the precise prefix cache (token-producer with a `vllm launch render` sidecar), plus a per-rank load test, `deploy.sh`, `demo.sh`, `teardown.sh` |
 | `vllm-internal-lb/` | One DP=4 group over two pods in vLLM's internal load-balancing mode: a single Rust frontend on the leader, headless engines on the worker. No P/D. `deploy.sh`, `demo.sh`, `teardown.sh` |
+| `sglang-multinode/` | SGLang v0.5.22, one DP-attention group (DP=4) over two pods with HTTP on the leader only. The EPP reads every rank's load from the leader's `/v1/loads?format=prometheus`. No P/D. `deploy.sh`, `teardown.sh` |
+| `sglang-per-rank-listeners/` | SGLang v0.5.22 with `SGLANG_RUST_SERVER=1`: every rank serves HTTP on its own pod at `8000 + node-local rank`, in a one-port-per-rank InferencePool. No P/D. `deploy.sh`, `teardown.sh` |
 | `multinode/` | Coordinator P/D where each phase is one DP=4 group over two pods (LeaderWorkerSet, 2 ranks per pod), EPPs with `--data-parallel-start-rank-label`, `deploy.sh`, `demo.sh`, `teardown.sh` |
 
 ## Prerequisites
 
 - A Kubernetes cluster with the InferencePool CRD (`inference.networking.k8s.io/v1`) and 4 free
   NVIDIA GPUs per demo (2 per vLLM pod; 6 for `mixed/`, 8 for `multinode/` and `kvevents/`, 4 for `vllm-internal-lb/`). Tested on H200s.
-- For `multinode/`, `kvevents/` and `vllm-internal-lb/`: the LeaderWorkerSet CRD (`leaderworkerset.x-k8s.io/v1`).
+- For `multinode/`, `kvevents/`, `vllm-internal-lb/` and the SGLang tests: the LeaderWorkerSet CRD (`leaderworkerset.x-k8s.io/v1`).
 - Images:
   - `docker.io/vllm/vllm-openai:v0.32.0`
   - `ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6`, built from the
     branch above at `a61396f6` with `make image-build-epp TARGETARCH=amd64`
   - `ghcr.io/robertgshaw2-redhat/llm-d-router-disagg-sidecar:dp-rank-851a0215`, built at `851a0215`
     with `make image-build-sidecar TARGETARCH=amd64` (later commits do not change the sidecar)
-  - `docker.io/vllm/vllm-openai-cpu:v0.31.0` for the `kvevents/` render sidecar
+  - `docker.io/vllm/vllm-openai-cpu:v0.31.0` for the `kvevents/` and SGLang render sidecars
+  - `docker.io/lmsysorg/sglang:v0.5.22` for the SGLang tests
   - `docker.io/envoyproxy/envoy:distroless-v1.33.2`, `ghcr.io/llm-d/llm-d-router-coordinator:v1.0.0`
 - Outbound access to Hugging Face for the model (about 30 GB per pod; the cache is an `emptyDir`).
 
@@ -73,6 +76,8 @@ Each script uses the current kubectl context and namespace; set `CTX` and `NS` t
 ./kvevents/deploy.sh && ./kvevents/demo.sh
 ./multinode/deploy.sh && ./multinode/demo.sh
 ./vllm-internal-lb/deploy.sh && ./vllm-internal-lb/demo.sh
+./sglang-multinode/deploy.sh
+./sglang-per-rank-listeners/deploy.sh
 ```
 
 The demos send a few chat completions and print evidence. vLLM counters are cumulative, so run
@@ -411,13 +416,45 @@ llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpm-decode-0-rank-1",na
 Global ranks 2 and 3 go to the `worker-index=1` pods, and only their `engine="2"` and `engine="3"`
 counters move. Decode reads every prompt from prefill over NIXL across pods.
 
+## SGLang multi-node results
+
+Both setups run one DP-attention group (`--dp-size 4 --tp-size 4 --enable-dp-attention`) over a
+LeaderWorkerSet of two pods with 2 GPUs each, so pod `k` hosts global ranks `2k` and `2k+1`. No
+script records their output; these are the results from the test cluster with the EPP built at
+`b329d2fe`.
+
+**`sglang-multinode/`** (HTTP server on the leader only; the leader is annotated
+`llm-d.ai/data-parallel-size-local: "4"`):
+
+- `X-Data-Parallel-Rank` 0-3 sent to the leader ran on DP0-DP3, including ranks 2 and 3 on the
+  worker pod (counted from SGLang's per-rank "Prefill batch" log lines).
+- The leader's `/metrics` has only its own ranks (`dp_rank` 0 and 1), so with `/metrics` the EPP
+  had no load for ranks 2 and 3 and dropped them. The leader's `/v1/loads?format=prometheus`
+  reports all four ranks; with it as the metrics source the EPP routed to all four, and with 24
+  requests running directly on remote rank 2 it sent new requests only to ranks 0, 1 and 3.
+- KV events: ranks 2 and 3 publish on the worker pod's IP, which the EPP does not know, so only
+  ranks 0 and 1 reach the precise prefix cache.
+
+**`sglang-per-rank-listeners/`** (`SGLANG_RUST_SERVER=1`, one InferencePool target port per rank,
+no rank header):
+
+- Requests through the EPP ran on all four ranks.
+- KV events from all four ranks reached the EPP. SGLang offsets each rank's KV-event port by its
+  global rank, so each pod lowers its base port by `2 * worker-index`.
+- The per-rank listeners in v0.5.22 return 404 on `/metrics`, so per-rank load is not available in
+  this mode yet.
+
 ## Limitations
 
 - **One target port.** `--data-parallel-size-local` above 1 requires an InferencePool with
   exactly one target port, which is how `vllm-rs` serves all ranks.
-- **One frontend per pod.** A data-parallel group over several pods needs one `vllm-rs` frontend
-  per pod (hybrid LB, see `multinode/`). One frontend serving a group with headless engines on
-  other pods is not covered.
+- **KV events from engines on another pod.** When one frontend serves a group with engines on other
+  pods (vLLM internal LB in `vllm-internal-lb/`, SGLang's standard layout in `sglang-multinode/`),
+  those engines publish KV events on their own pod, which the EPP does not know. Routing and
+  per-rank load work. vLLM v0.32.0 reports each engine's reachable publisher address in
+  `/kv_event_sources` when configured with `"endpoint": "tcp://*:0"`; the EPP does not read it
+  yet. For multi-node DP with every feature, use one frontend per pod (vLLM hybrid LB,
+  `multinode/` and `kvevents/`).
 - **Rank count is configured, not discovered.** vLLM reports `data_parallel_size_local` in
   `vllm.Control/GetServerInfo`; discovering it is a follow-up.
 - **HTTP only.** The router reaches vLLM over HTTP. The gRPC path is
@@ -432,4 +469,6 @@ counters move. Decode reads every prompt from prefill over NIXL across pods.
 ./kvevents/teardown.sh
 ./multinode/teardown.sh
 ./vllm-internal-lb/teardown.sh
+./sglang-multinode/teardown.sh
+./sglang-per-rank-listeners/teardown.sh
 ```

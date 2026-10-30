@@ -1,0 +1,37 @@
+# Envoy gateway: every request goes through the EPP to a decode pod's sidecar.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpg-envoy
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dpg-envoy}
+  template:
+    metadata:
+      labels: {app: dpg-envoy}
+    spec:
+      containers:
+        - name: envoy
+          image: docker.io/envoyproxy/envoy:distroless-v1.33.2
+          args: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"]
+          ports:
+            - {containerPort: 8081, name: http}
+            - {containerPort: 19001, name: ready}
+          readinessProbe:
+            httpGet: {path: /ready, port: ready}
+            periodSeconds: 5
+          volumeMounts:
+            - {mountPath: /etc/envoy, name: config}
+      volumes:
+        - name: config
+          configMap: {name: dpg-envoy}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dpg-envoy
+spec:
+  selector: {app: dpg-envoy}
+  ports:
+    - {name: http, port: 8081}
