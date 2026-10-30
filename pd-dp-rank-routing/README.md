@@ -11,7 +11,7 @@ The routing comes from llm-d-router branch
 
 | Piece | What it does |
 |---|---|
-| `--data-parallel-ranks-per-port=2` (EPP flag) | Each pod of the InferencePool becomes two endpoints, `<pod>-rank-0` and `<pod>-rank-1`, on the pod's one target port. |
+| `llm-d.ai/data-parallel-size-local: "2"` (pod annotation) or `--data-parallel-size-local=2` (EPP flag, default for pods without the annotation) | Each pod becomes two endpoints, `<pod>-rank-0` and `<pod>-rank-1`, on its one target port. The value is the pod's vLLM `--data-parallel-size-local`. |
 | `data-parallel-rank-header` (EPP plugin) | Writes the picked endpoint's rank to `x-data-parallel-rank`. vLLM sends the request to that engine. |
 | Per-rank metrics | vLLM labels its metrics `engine="<rank>"`. Each rank endpoint reads only its own series, so queue and KV-cache scorers see each rank's load. |
 | Per-rank scheduling state | In-flight counts and approximate prefix-cache state are kept per rank endpoint, so a shared prefix sticks to the rank that holds it. |
@@ -39,7 +39,7 @@ client                                         client
 | `common/lib.sh` | Helpers the demo scripts share |
 | `coordinator/` | vLLM pods, two InferencePools and EPPs (one per phase), Envoy, coordinator, `deploy.sh`, `demo.sh`, `teardown.sh` |
 | `sidecar/` | vLLM pods (the decode pod runs the routing sidecar), one InferencePool and EPP with `disagg-profile-handler`, Envoy, `deploy.sh`, `demo.sh`, `teardown.sh` |
-| `mixed/` | Coordinator P/D with prefill DP=2 and decode DP=4 in one InferencePool behind one EPP (`header-profile-handler`), rank counts set per pod with the `llm-d.ai/data-parallel-ranks` annotation, `deploy.sh`, `demo.sh`, `teardown.sh` |
+| `mixed/` | Coordinator P/D with prefill DP=2 and decode DP=4 in one InferencePool behind one EPP (`header-profile-handler`), rank counts set per pod with the `llm-d.ai/data-parallel-size-local` annotation, `deploy.sh`, `demo.sh`, `teardown.sh` |
 | `multinode/` | Coordinator P/D where each phase is one DP=4 group over two pods (LeaderWorkerSet, 2 ranks per pod), EPPs with `--data-parallel-start-rank-label`, `deploy.sh`, `demo.sh`, `teardown.sh` |
 
 ## Prerequisites
@@ -49,9 +49,10 @@ client                                         client
 - For `multinode/`: the LeaderWorkerSet CRD (`leaderworkerset.x-k8s.io/v1`).
 - Images:
   - `docker.io/vllm/vllm-openai:v0.32.0`
-  - `ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-851a0215` (`multinode/` uses `dp-rank-390eb7da`, `mixed/` uses `dp-rank-37cd9dbc`) and
-    `ghcr.io/robertgshaw2-redhat/llm-d-router-disagg-sidecar:dp-rank-851a0215`, built from the
-    branch above at `851a0215` with `make image-build-epp image-build-sidecar TARGETARCH=amd64`
+  - `ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6`, built from the
+    branch above at `a61396f6` with `make image-build-epp TARGETARCH=amd64`
+  - `ghcr.io/robertgshaw2-redhat/llm-d-router-disagg-sidecar:dp-rank-851a0215`, built at `851a0215`
+    with `make image-build-sidecar TARGETARCH=amd64` (later commits do not change the sidecar)
   - `docker.io/envoyproxy/envoy:distroless-v1.33.2`, `ghcr.io/llm-d/llm-d-router-coordinator:v1.0.0`
 - Outbound access to Hugging Face for the model (about 30 GB per pod; the cache is an `emptyDir`).
 
@@ -116,54 +117,55 @@ Not run yet. The sidecar demo deploys, but its run is pending a public sidecar i
 ## Mixed DP sizes demo output
 
 One InferencePool and one EPP serve both phases. The prefill pod runs DP=2 on 2 GPUs and is
-annotated `llm-d.ai/data-parallel-ranks: "2"`; the decode pod runs DP=4 on 4 GPUs and is annotated
-`"4"`. The EPP runs without `--data-parallel-ranks-per-port`, using the image built at `37cd9dbc`.
+annotated `llm-d.ai/data-parallel-size-local: "2"`; the decode pod runs DP=4 on 4 GPUs and is annotated
+`"4"`. The EPP runs without `--data-parallel-size-local`, using the image built at `a61396f6`.
 
 ```
 == 1. The EPP's endpoints: 2 for the prefill pod, 4 for the decode pod
-llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-decode-574574fcd5-b48vp-rank-0",name="dpx"} 0
-llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-decode-574574fcd5-b48vp-rank-1",name="dpx"} 0
-llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-decode-574574fcd5-b48vp-rank-2",name="dpx"} 0
-llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-decode-574574fcd5-b48vp-rank-3",name="dpx"} 0
-llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-prefill-8664c69cd5-cwtkk-rank-0",name="dpx"} 0
-llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-prefill-8664c69cd5-cwtkk-rank-1",name="dpx"} 0
+llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-decode-6b7d64f94f-8fk9b-rank-0",name="dpx"} 0
+llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-decode-6b7d64f94f-8fk9b-rank-1",name="dpx"} 0
+llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-decode-6b7d64f94f-8fk9b-rank-2",name="dpx"} 0
+llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-decode-6b7d64f94f-8fk9b-rank-3",name="dpx"} 0
+llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-prefill-7988b6d897-hrntx-rank-0",name="dpx"} 0
+llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-prefill-7988b6d897-hrntx-rank-1",name="dpx"} 0
 
 == 2. Requests: prefill cycles ranks 0-1, decode cycles ranks 0-3 (Envoy log)
-profile=prefill dprank=0 upstream=10.0.5.153:8000
-profile=decode dprank=0 upstream=10.0.8.36:8000
-profile=prefill dprank=1 upstream=10.0.5.153:8000
-profile=decode dprank=1 upstream=10.0.8.36:8000
-profile=prefill dprank=0 upstream=10.0.5.153:8000
-profile=decode dprank=2 upstream=10.0.8.36:8000
-profile=prefill dprank=1 upstream=10.0.5.153:8000
-profile=decode dprank=3 upstream=10.0.8.36:8000
-profile=prefill dprank=0 upstream=10.0.5.153:8000
-profile=decode dprank=0 upstream=10.0.8.36:8000
-profile=prefill dprank=1 upstream=10.0.5.153:8000
-profile=decode dprank=1 upstream=10.0.8.36:8000
-profile=prefill dprank=0 upstream=10.0.5.153:8000
-profile=decode dprank=2 upstream=10.0.8.36:8000
-profile=prefill dprank=1 upstream=10.0.5.153:8000
-profile=decode dprank=3 upstream=10.0.8.36:8000
+profile=prefill dprank=0 upstream=10.0.8.21:8000
+profile=decode dprank=0 upstream=10.0.7.137:8000
+profile=prefill dprank=1 upstream=10.0.8.21:8000
+profile=decode dprank=1 upstream=10.0.7.137:8000
+profile=prefill dprank=0 upstream=10.0.8.21:8000
+profile=decode dprank=2 upstream=10.0.7.137:8000
+profile=prefill dprank=1 upstream=10.0.8.21:8000
+profile=decode dprank=3 upstream=10.0.7.137:8000
+profile=prefill dprank=0 upstream=10.0.8.21:8000
+profile=decode dprank=0 upstream=10.0.7.137:8000
+profile=prefill dprank=1 upstream=10.0.8.21:8000
+profile=decode dprank=1 upstream=10.0.7.137:8000
+profile=prefill dprank=0 upstream=10.0.8.21:8000
+profile=decode dprank=2 upstream=10.0.7.137:8000
+profile=prefill dprank=1 upstream=10.0.8.21:8000
+profile=decode dprank=3 upstream=10.0.7.137:8000
 
 == 3. vLLM ran each request on the picked engine
--- prefill pod 10.0.5.153
+-- prefill pod 10.0.8.21
   engine=0 ran 4
   engine=1 ran 4
--- decode pod 10.0.8.36
+-- decode pod 10.0.7.137
   engine=0 ran 2
   engine=1 ran 2
   engine=2 ran 2
   engine=3 ran 2
 
 == 4. Decode read the prompt KV from prefill over NIXL, on all four engines
-vllm:prompt_tokens_by_source_total{engine="2",source="external_kv_transfer"} 40
-vllm:prompt_tokens_by_source_total{engine="3",source="external_kv_transfer"} 40
-vllm:prompt_tokens_by_source_total{engine="1",source="external_kv_transfer"} 40
-vllm:prompt_tokens_by_source_total{engine="0",source="external_kv_transfer"} 40
+vllm:prompt_tokens_by_source_total{engine="0",source="external_kv_transfer"} 48
+vllm:prompt_tokens_by_source_total{engine="2",source="external_kv_transfer"} 48
+vllm:prompt_tokens_by_source_total{engine="3",source="external_kv_transfer"} 48
+vllm:prompt_tokens_by_source_total{engine="1",source="external_kv_transfer"} 48
 ```
 
-Changing the decode pod's annotation to `"2"` on the running pod removed its `rank-2` and `rank-3`
+Changing the decode pod's annotation to `"2"` on the running pod (tested at `37cd9dbc`, before the
+annotation was renamed from `llm-d.ai/data-parallel-ranks`) removed its `rank-2` and `rank-3`
 endpoints from the EPP; setting it back to `"4"` restored them.
 
 ## Multi-node demo output
@@ -173,7 +175,7 @@ Each phase runs one DP=4 group as a LeaderWorkerSet of two pods with 2 GPUs each
 --data-parallel-size-local 2 --data-parallel-start-rank 2k` with `VLLM_USE_RUST_FRONTEND=1`, so
 its `vllm-rs` frontend serves global ranks 2k and 2k+1. The EPPs run with
 `--data-parallel-start-rank-label=leaderworkerset.sigs.k8s.io/worker-index` and the EPP image
-built at `390eb7da`. The vLLM manifest requests `rdma/ib` and sets `NCCL_IB_HCA` for the test
+built at `390eb7da` (where the flag was named `--data-parallel-ranks-per-port`). The vLLM manifest requests `rdma/ib` and sets `NCCL_IB_HCA` for the test
 cluster; drop them on clusters without InfiniBand.
 
 ```
@@ -235,7 +237,7 @@ counters move. Decode reads every prompt from prefill over NIXL across pods.
 
 ## Limitations
 
-- **One target port.** `--data-parallel-ranks-per-port` above 1 requires an InferencePool with
+- **One target port.** `--data-parallel-size-local` above 1 requires an InferencePool with
   exactly one target port, which is how `vllm-rs` serves all ranks.
 - **One frontend per pod.** A data-parallel group over several pods needs one `vllm-rs` frontend
   per pod (hybrid LB, see `multinode/`). One frontend serving a group with headless engines on

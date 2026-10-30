@@ -1,6 +1,6 @@
 # One InferencePool and one EPP per phase. Each phase is one DP=4 group spread
 # over two pods (LWS size 2), 2 ranks per pod. Each EPP runs with
-# --data-parallel-ranks-per-port=2 and
+# --data-parallel-size-local=2 and
 # --data-parallel-start-rank-label=leaderworkerset.sigs.k8s.io/worker-index, so
 # worker k's endpoints <pod>-rank-0 and <pod>-rank-1 carry global ranks 2k and
 # 2k+1. data-parallel-rank-header sends the global rank as x-data-parallel-rank,
@@ -76,13 +76,13 @@ spec:
       serviceAccountName: dpm-epp
       containers:
         - name: epp
-          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-390eb7da
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6
           imagePullPolicy: Always
           args:
             - --pool-name=dpm-prefill
             - --pool-namespace=$(NAMESPACE)
             - --config-file=/etc/epp/config.yaml
-            - --data-parallel-ranks-per-port=2
+            - --data-parallel-size-local=2
             - --data-parallel-start-rank-label=leaderworkerset.sigs.k8s.io/worker-index
             - --secure-serving=false
             - --metrics-endpoint-auth=false
@@ -130,13 +130,13 @@ spec:
       serviceAccountName: dpm-epp
       containers:
         - name: epp
-          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-390eb7da
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6
           imagePullPolicy: Always
           args:
             - --pool-name=dpm-decode
             - --pool-namespace=$(NAMESPACE)
             - --config-file=/etc/epp/config.yaml
-            - --data-parallel-ranks-per-port=2
+            - --data-parallel-size-local=2
             - --data-parallel-start-rank-label=leaderworkerset.sigs.k8s.io/worker-index
             - --secure-serving=false
             - --metrics-endpoint-auth=false

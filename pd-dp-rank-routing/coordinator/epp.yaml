@@ -1,5 +1,5 @@
 # One InferencePool and one EPP per phase. Each EPP runs with
-# --data-parallel-ranks-per-port=2, so every vLLM pod (one port, DP=2 behind
+# --data-parallel-size-local=2, so every vLLM pod (one port, DP=2 behind
 # vllm-rs) becomes two endpoints, <pod>-rank-0 and <pod>-rank-1. Scorers see
 # each rank's own vLLM metrics (engine="<rank>"), and data-parallel-rank-header
 # sends the picked rank to vLLM as x-data-parallel-rank.
@@ -74,13 +74,13 @@ spec:
       serviceAccountName: dpc-epp
       containers:
         - name: epp
-          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-851a0215
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6
           imagePullPolicy: Always
           args:
             - --pool-name=dpc-prefill
             - --pool-namespace=$(NAMESPACE)
             - --config-file=/etc/epp/config.yaml
-            - --data-parallel-ranks-per-port=2
+            - --data-parallel-size-local=2
             - --secure-serving=false
             - --metrics-endpoint-auth=false
             - --allow-experimental-plugins=true
@@ -127,13 +127,13 @@ spec:
       serviceAccountName: dpc-epp
       containers:
         - name: epp
-          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-851a0215
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6
           imagePullPolicy: Always
           args:
             - --pool-name=dpc-decode
             - --pool-namespace=$(NAMESPACE)
             - --config-file=/etc/epp/config.yaml
-            - --data-parallel-ranks-per-port=2
+            - --data-parallel-size-local=2
             - --secure-serving=false
             - --metrics-endpoint-auth=false
             - --allow-experimental-plugins=true

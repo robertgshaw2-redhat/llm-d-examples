@@ -1,6 +1,6 @@
 # One InferencePool over both roles and one EPP. The coordinator names the phase
 # in x-llm-d-epp-profile, and header-profile-handler runs that profile. Without
-# --data-parallel-ranks-per-port, each pod's llm-d.ai/data-parallel-ranks
+# --data-parallel-size-local, each pod's llm-d.ai/data-parallel-size-local
 # annotation sets its rank endpoints: 2 for prefill, 4 for decode.
 apiVersion: inference.networking.k8s.io/v1
 kind: InferencePool
@@ -71,7 +71,7 @@ spec:
       serviceAccountName: dpx-epp
       containers:
         - name: epp
-          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-37cd9dbc
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6
           imagePullPolicy: Always
           args:
             - --pool-name=dpx

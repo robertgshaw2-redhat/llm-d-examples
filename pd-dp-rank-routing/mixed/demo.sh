@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mixed DP sizes demo: prefill DP=2 and decode DP=4 in one pool behind one EPP,
-# each pod's rank count set by its llm-d.ai/data-parallel-ranks annotation.
+# each pod's rank count set by its llm-d.ai/data-parallel-size-local annotation.
 set -euo pipefail
 cd "$(dirname "$0")"
 source ../common/lib.sh

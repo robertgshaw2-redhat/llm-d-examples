@@ -1,6 +1,6 @@
 # One InferencePool over both roles and one EPP that schedules prefill and
 # decode in one run (disagg-profile-handler). With
-# --data-parallel-ranks-per-port=2 every pod becomes <pod>-rank-0 and
+# --data-parallel-size-local=2 every pod becomes <pod>-rank-0 and
 # <pod>-rank-1 on its one port. The decode rank goes to the decode pod as
 # x-data-parallel-rank; the prefill rank goes to the sidecar as
 # x-llm-d-prefiller-data-parallel-rank, and the sidecar sets it as
@@ -78,13 +78,13 @@ spec:
       serviceAccountName: dps-epp
       containers:
         - name: epp
-          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-851a0215
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6
           imagePullPolicy: Always
           args:
             - --pool-name=dps
             - --pool-namespace=$(NAMESPACE)
             - --config-file=/etc/epp/config.yaml
-            - --data-parallel-ranks-per-port=2
+            - --data-parallel-size-local=2
             - --secure-serving=false
             - --metrics-endpoint-auth=false
             - --allow-experimental-plugins=true

@@ -1,8 +1,8 @@
 # DeepSeek-V2-Lite P/D with different data-parallel sizes per role, in one
 # InferencePool behind one EPP: the prefill pod runs DP=2 on 2 GPUs, the decode
 # pod DP=4 on 4 GPUs. Each pod declares its rank count with the
-# llm-d.ai/data-parallel-ranks annotation; the EPP runs without
-# --data-parallel-ranks-per-port.
+# llm-d.ai/data-parallel-size-local annotation; the EPP runs without
+# --data-parallel-size-local.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -14,7 +14,7 @@ spec:
   template:
     metadata:
       labels: {app: dpx-vllm, llm-d.ai/role: prefill}
-      annotations: {llm-d.ai/data-parallel-ranks: "2"}
+      annotations: {llm-d.ai/data-parallel-size-local: "2"}
     spec:
       containers:
         - name: vllm
@@ -68,7 +68,7 @@ spec:
   template:
     metadata:
       labels: {app: dpx-vllm, llm-d.ai/role: decode}
-      annotations: {llm-d.ai/data-parallel-ranks: "4"}
+      annotations: {llm-d.ai/data-parallel-size-local: "4"}
     spec:
       containers:
         - name: vllm
