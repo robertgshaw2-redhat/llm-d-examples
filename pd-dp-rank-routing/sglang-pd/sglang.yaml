@@ -1,0 +1,131 @@
+# DeepSeek-V2-Lite on SGLang v0.5.22, one prefill pod and one decode pod, each
+# one DP-attention group with DP=2 (TP=2) on 2 GPUs. P/D goes through the
+# routing sidecar on the decode pod (--kv-connector=sglang): it sends the
+# prefill request to the prefill pod with x-data-parallel-rank set to the EPP's
+# prefill rank, and both bodies carry bootstrap_host/port/room and
+# disagg_prefill_dp_rank. KV moves over Mooncake (RDMA).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpq-prefill
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dpq-sglang, llm-d.ai/role: prefill}
+  template:
+    metadata:
+      labels: {app: dpq-sglang, llm-d.ai/role: prefill, llm-d.ai/engine-type: sglang}
+    spec:
+      tolerations:
+        - {key: is_gpu, operator: Exists, effect: PreferNoSchedule}
+      containers:
+        - name: sglang
+          image: docker.io/lmsysorg/sglang:v0.5.22
+          command: ["/bin/bash", "-c"]
+          args:
+            - |-
+              exec python3 -m sglang.launch_server \
+                --model-path deepseek-ai/DeepSeek-V2-Lite --trust-remote-code \
+                --host 0.0.0.0 --port 8000 \
+                --tp-size 2 --dp-size 2 --enable-dp-attention \
+                --context-length 16384 --enable-metrics \
+                --disaggregation-mode prefill \
+                --disaggregation-bootstrap-port 8998 \
+                --disaggregation-transfer-backend mooncake
+          env:
+            - {name: HF_HUB_CACHE, value: /var/cache/huggingface}
+            - {name: NCCL_IB_HCA, value: ibp}
+          ports:
+            - {containerPort: 8000, name: http}
+            - {containerPort: 8998, name: bootstrap}
+          # SGLang's /health runs a short generation, which can take over a second.
+          startupProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 360
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: {cpu: "16", memory: 128Gi, nvidia.com/gpu: "2", rdma/ib: "2"}
+            limits: {memory: 128Gi, nvidia.com/gpu: "2", rdma/ib: "2"}
+          securityContext:
+            capabilities: {add: [IPC_LOCK, SYS_RAWIO]}
+          volumeMounts:
+            - {mountPath: /dev/shm, name: dshm}
+            - {mountPath: /var/cache/huggingface, name: hf-cache}
+      volumes:
+        - name: dshm
+          emptyDir: {medium: Memory, sizeLimit: 16Gi}
+        - name: hf-cache
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpq-decode
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dpq-sglang, llm-d.ai/role: decode}
+  template:
+    metadata:
+      labels: {app: dpq-sglang, llm-d.ai/role: decode, llm-d.ai/engine-type: sglang}
+    spec:
+      tolerations:
+        - {key: is_gpu, operator: Exists, effect: PreferNoSchedule}
+      containers:
+        - name: routing-sidecar
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-disagg-sidecar:dp-rank-fe8f7e02
+          imagePullPolicy: Always
+          args:
+            - --port=8000
+            - --model-server-port=8200
+            - --kv-connector=sglang
+            - --secure-serving=false
+          ports:
+            - {containerPort: 8000, name: sidecar-http}
+        - name: sglang
+          image: docker.io/lmsysorg/sglang:v0.5.22
+          command: ["/bin/bash", "-c"]
+          args:
+            - |-
+              exec python3 -m sglang.launch_server \
+                --model-path deepseek-ai/DeepSeek-V2-Lite --trust-remote-code \
+                --host 0.0.0.0 --port 8200 \
+                --tp-size 2 --dp-size 2 --enable-dp-attention \
+                --context-length 16384 --enable-metrics \
+                --disaggregation-mode decode \
+                --disaggregation-transfer-backend mooncake
+          env:
+            - {name: HF_HUB_CACHE, value: /var/cache/huggingface}
+            - {name: NCCL_IB_HCA, value: ibp}
+          ports:
+            - {containerPort: 8200, name: http}
+          # SGLang's /health runs a short generation, which can take over a second.
+          startupProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 360
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: {cpu: "16", memory: 128Gi, nvidia.com/gpu: "2", rdma/ib: "2"}
+            limits: {memory: 128Gi, nvidia.com/gpu: "2", rdma/ib: "2"}
+          securityContext:
+            capabilities: {add: [IPC_LOCK, SYS_RAWIO]}
+          volumeMounts:
+            - {mountPath: /dev/shm, name: dshm}
+            - {mountPath: /var/cache/huggingface, name: hf-cache}
+      volumes:
+        - name: dshm
+          emptyDir: {medium: Memory, sizeLimit: 16Gi}
+        - name: hf-cache
+          emptyDir: {}

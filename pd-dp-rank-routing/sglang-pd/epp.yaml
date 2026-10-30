@@ -1,0 +1,121 @@
+# One InferencePool over both roles and one EPP that schedules prefill and
+# decode in one run (disagg-profile-handler). With
+# --data-parallel-size-local=2 every pod becomes <pod>-rank-0 and
+# <pod>-rank-1 on its one port. The decode rank goes to the decode pod as
+# x-data-parallel-rank; the prefill rank goes to the sidecar as
+# x-llm-d-prefiller-data-parallel-rank, and the sidecar sets it as
+# x-data-parallel-rank on the prefill request.
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: dpq
+spec:
+  selector:
+    matchLabels: {app: dpq-sglang}
+  targetPorts:
+    - number: 8000
+  endpointPickerRef:
+    name: dpq-epp
+    port: {number: 9002}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dpq-epp
+data:
+  config.yaml: |
+    apiVersion: llm-d.ai/v1
+    kind: EndpointPickerConfig
+    plugins:
+      - type: openai-parser
+      - type: approx-prefix-cache-producer
+      - type: prefix-cache-scorer
+      - type: queue-scorer
+      - type: running-requests-size-scorer
+      - type: inflight-load-producer
+      - type: active-request-scorer
+      - type: prefill-filter
+      - type: decode-filter
+      - type: max-score-picker
+      - type: always-disagg-pd-decider
+      - type: disagg-profile-handler
+        parameters:
+          deciders:
+            prefill: always-disagg-pd-decider
+    requestHandler:
+      parsers:
+        - pluginRef: openai-parser
+    schedulingProfiles:
+      - name: prefill
+        plugins:
+          - pluginRef: prefill-filter
+          - pluginRef: prefix-cache-scorer
+            weight: 2
+          - pluginRef: queue-scorer
+          - pluginRef: running-requests-size-scorer
+            weight: 2
+          - pluginRef: active-request-scorer
+          - pluginRef: max-score-picker
+      - name: decode
+        plugins:
+          - pluginRef: decode-filter
+          - pluginRef: prefix-cache-scorer
+            weight: 2
+          - pluginRef: queue-scorer
+          - pluginRef: running-requests-size-scorer
+            weight: 2
+          - pluginRef: active-request-scorer
+          - pluginRef: max-score-picker
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpq-epp
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dpq-epp}
+  template:
+    metadata:
+      labels: {app: dpq-epp}
+    spec:
+      serviceAccountName: dpq-epp
+      containers:
+        - name: epp
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-fe8f7e02
+          imagePullPolicy: Always
+          args:
+            - --pool-name=dpq
+            - --pool-namespace=$(NAMESPACE)
+            - --config-file=/etc/epp/config.yaml
+            - --data-parallel-size-local=2
+            - --secure-serving=false
+            - --metrics-endpoint-auth=false
+            - --allow-experimental-plugins=true
+            - --grpc-port=9002
+            - --grpc-health-port=9003
+          env:
+            - name: NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+          ports:
+            - {containerPort: 9002, name: grpc}
+            - {containerPort: 9003, name: grpc-health}
+            - {containerPort: 9090, name: metrics}
+          readinessProbe:
+            grpc: {port: 9003, service: readiness}
+            periodSeconds: 5
+          volumeMounts:
+            - {mountPath: /etc/epp, name: config}
+      volumes:
+        - name: config
+          configMap: {name: dpq-epp}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dpq-epp
+spec:
+  selector: {app: dpq-epp}
+  ports:
+    - {name: grpc, port: 9002}
+    - {name: metrics, port: 9090}

@@ -45,6 +45,7 @@ client                                         client
 | `vllm-internal-lb/` | One DP=4 group over two pods in vLLM's internal load-balancing mode: a single Rust frontend on the leader, headless engines on the worker. No P/D. `deploy.sh`, `demo.sh`, `teardown.sh` |
 | `sglang-multinode/` | SGLang v0.5.22, one DP-attention group (DP=4) over two pods with HTTP on the leader only. The EPP reads every rank's load from the leader's `/v1/loads?format=prometheus`. No P/D. `deploy.sh`, `teardown.sh` |
 | `sglang-per-rank-listeners/` | SGLang v0.5.22 with `SGLANG_RUST_SERVER=1`: every rank serves HTTP on its own pod at `8000 + node-local rank`, in a one-port-per-rank InferencePool. No P/D. `deploy.sh`, `teardown.sh` |
+| `sglang-pd/` | SGLang v0.5.22 P/D through the sidecar (`--kv-connector=sglang`, Mooncake), DP=2 per pod. The sidecar sends the EPP's prefill rank as `x-data-parallel-rank` and `disagg_prefill_dp_rank`. `deploy.sh`, `teardown.sh` |
 | `sidecar-p2p/` | Sidecar P/D over vLLM's OffloadingConnector P2P tier: decode pulls the prefill rank's KV from port 7777 + rank. `deploy.sh`, `teardown.sh` |
 | `multinode/` | Coordinator P/D where each phase is one DP=4 group over two pods (LeaderWorkerSet, 2 ranks per pod), EPPs with `--data-parallel-start-rank-label`, `deploy.sh`, `demo.sh`, `teardown.sh` |
 
@@ -81,6 +82,7 @@ Each script uses the current kubectl context and namespace; set `CTX` and `NS` t
 ./sglang-multinode/deploy.sh
 ./sglang-per-rank-listeners/deploy.sh
 ./sidecar-p2p/deploy.sh
+./sglang-pd/deploy.sh
 ```
 
 The demos send a few chat completions and print evidence. vLLM counters are cumulative, so run
@@ -475,4 +477,5 @@ no rank header):
 ./sglang-multinode/teardown.sh
 ./sglang-per-rank-listeners/teardown.sh
 ./sidecar-p2p/teardown.sh
+./sglang-pd/teardown.sh
 ```
