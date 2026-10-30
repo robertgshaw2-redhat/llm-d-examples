@@ -1,0 +1,112 @@
+# DeepSeek-V2-Lite P/D with different data-parallel sizes per role, in one
+# InferencePool behind one EPP: the prefill pod runs DP=2 on 2 GPUs, the decode
+# pod DP=4 on 4 GPUs. Each pod declares its rank count with the
+# llm-d.ai/data-parallel-ranks annotation; the EPP runs without
+# --data-parallel-ranks-per-port.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpx-prefill
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dpx-vllm, llm-d.ai/role: prefill}
+  template:
+    metadata:
+      labels: {app: dpx-vllm, llm-d.ai/role: prefill}
+      annotations: {llm-d.ai/data-parallel-ranks: "2"}
+    spec:
+      containers:
+        - name: vllm
+          image: docker.io/vllm/vllm-openai:v0.32.0
+          command: ["/bin/bash", "-c"]
+          args:
+            - |-
+              set -euo pipefail
+              python3 -c "import nixl" 2>/dev/null || uv pip install --system nixl nixl-cu13
+              VLLM_RS=$(python3 -c 'import os, vllm; print(os.path.join(os.path.dirname(vllm.__file__), "vllm-rs"))')
+              exec "$VLLM_RS" serve deepseek-ai/DeepSeek-V2-Lite \
+                --host 0.0.0.0 --port 8000 --grpc-port 50051 \
+                --data-parallel-size 2 \
+                --max-model-len 16384 \
+                --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+          env:
+            - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+              valueFrom: {fieldRef: {fieldPath: status.podIP}}
+            - {name: HF_HUB_CACHE, value: /var/cache/huggingface}
+          ports:
+            - {containerPort: 8000, name: http}
+            - {containerPort: 50051, name: grpc}
+          startupProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+            failureThreshold: 360
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: "16", memory: 128Gi, nvidia.com/gpu: "2"}
+            limits: {memory: 128Gi, nvidia.com/gpu: "2"}
+          volumeMounts:
+            - {mountPath: /dev/shm, name: dshm}
+            - {mountPath: /var/cache/huggingface, name: hf-cache}
+      volumes:
+        - name: dshm
+          emptyDir: {medium: Memory, sizeLimit: 16Gi}
+        # Replace with a PVC or hostPath to keep the weights across restarts.
+        - name: hf-cache
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpx-decode
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dpx-vllm, llm-d.ai/role: decode}
+  template:
+    metadata:
+      labels: {app: dpx-vllm, llm-d.ai/role: decode}
+      annotations: {llm-d.ai/data-parallel-ranks: "4"}
+    spec:
+      containers:
+        - name: vllm
+          image: docker.io/vllm/vllm-openai:v0.32.0
+          command: ["/bin/bash", "-c"]
+          args:
+            - |-
+              set -euo pipefail
+              python3 -c "import nixl" 2>/dev/null || uv pip install --system nixl nixl-cu13
+              VLLM_RS=$(python3 -c 'import os, vllm; print(os.path.join(os.path.dirname(vllm.__file__), "vllm-rs"))')
+              exec "$VLLM_RS" serve deepseek-ai/DeepSeek-V2-Lite \
+                --host 0.0.0.0 --port 8000 --grpc-port 50051 \
+                --data-parallel-size 4 \
+                --max-model-len 16384 \
+                --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+          env:
+            - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+              valueFrom: {fieldRef: {fieldPath: status.podIP}}
+            - {name: HF_HUB_CACHE, value: /var/cache/huggingface}
+          ports:
+            - {containerPort: 8000, name: http}
+            - {containerPort: 50051, name: grpc}
+          startupProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+            failureThreshold: 360
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: "16", memory: 128Gi, nvidia.com/gpu: "4"}
+            limits: {memory: 128Gi, nvidia.com/gpu: "4"}
+          volumeMounts:
+            - {mountPath: /dev/shm, name: dshm}
+            - {mountPath: /var/cache/huggingface, name: hf-cache}
+      volumes:
+        - name: dshm
+          emptyDir: {medium: Memory, sizeLimit: 16Gi}
+        # Replace with a PVC or hostPath to keep the weights across restarts.
+        - name: hf-cache
+          emptyDir: {}

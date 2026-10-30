@@ -39,16 +39,17 @@ client                                         client
 | `common/lib.sh` | Helpers the demo scripts share |
 | `coordinator/` | vLLM pods, two InferencePools and EPPs (one per phase), Envoy, coordinator, `deploy.sh`, `demo.sh`, `teardown.sh` |
 | `sidecar/` | vLLM pods (the decode pod runs the routing sidecar), one InferencePool and EPP with `disagg-profile-handler`, Envoy, `deploy.sh`, `demo.sh`, `teardown.sh` |
+| `mixed/` | Coordinator P/D with prefill DP=2 and decode DP=4 in one InferencePool behind one EPP (`header-profile-handler`), rank counts set per pod with the `llm-d.ai/data-parallel-ranks` annotation, `deploy.sh`, `demo.sh`, `teardown.sh` |
 | `multinode/` | Coordinator P/D where each phase is one DP=4 group over two pods (LeaderWorkerSet, 2 ranks per pod), EPPs with `--data-parallel-start-rank-label`, `deploy.sh`, `demo.sh`, `teardown.sh` |
 
 ## Prerequisites
 
 - A Kubernetes cluster with the InferencePool CRD (`inference.networking.k8s.io/v1`) and 4 free
-  NVIDIA GPUs per demo (2 per vLLM pod; 8 for `multinode/`). Tested on H200s.
+  NVIDIA GPUs per demo (2 per vLLM pod; 6 for `mixed/`, 8 for `multinode/`). Tested on H200s.
 - For `multinode/`: the LeaderWorkerSet CRD (`leaderworkerset.x-k8s.io/v1`).
 - Images:
   - `docker.io/vllm/vllm-openai:v0.32.0`
-  - `ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-851a0215` (`multinode/` uses `dp-rank-390eb7da`) and
+  - `ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-851a0215` (`multinode/` uses `dp-rank-390eb7da`, `mixed/` uses `dp-rank-37cd9dbc`) and
     `ghcr.io/robertgshaw2-redhat/llm-d-router-disagg-sidecar:dp-rank-851a0215`, built from the
     branch above at `851a0215` with `make image-build-epp image-build-sidecar TARGETARCH=amd64`
   - `docker.io/envoyproxy/envoy:distroless-v1.33.2`, `ghcr.io/llm-d/llm-d-router-coordinator:v1.0.0`
@@ -64,6 +65,7 @@ Each script uses the current kubectl context and namespace; set `CTX` and `NS` t
 ```bash
 ./coordinator/deploy.sh && ./coordinator/demo.sh
 ./sidecar/deploy.sh && ./sidecar/demo.sh
+./mixed/deploy.sh && ./mixed/demo.sh
 ./multinode/deploy.sh && ./multinode/demo.sh
 ```
 
@@ -110,6 +112,59 @@ the reuse. The decode pod's prompt tokens all come from `external_kv_transfer`, 
 ## Sidecar demo output
 
 Not run yet. The sidecar demo deploys, but its run is pending a public sidecar image.
+
+## Mixed DP sizes demo output
+
+One InferencePool and one EPP serve both phases. The prefill pod runs DP=2 on 2 GPUs and is
+annotated `llm-d.ai/data-parallel-ranks: "2"`; the decode pod runs DP=4 on 4 GPUs and is annotated
+`"4"`. The EPP runs without `--data-parallel-ranks-per-port`, using the image built at `37cd9dbc`.
+
+```
+== 1. The EPP's endpoints: 2 for the prefill pod, 4 for the decode pod
+llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-decode-574574fcd5-b48vp-rank-0",name="dpx"} 0
+llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-decode-574574fcd5-b48vp-rank-1",name="dpx"} 0
+llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-decode-574574fcd5-b48vp-rank-2",name="dpx"} 0
+llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-decode-574574fcd5-b48vp-rank-3",name="dpx"} 0
+llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-prefill-8664c69cd5-cwtkk-rank-0",name="dpx"} 0
+llm_d_epp_per_endpoint_queue_size{model_server_endpoint="dpx-prefill-8664c69cd5-cwtkk-rank-1",name="dpx"} 0
+
+== 2. Requests: prefill cycles ranks 0-1, decode cycles ranks 0-3 (Envoy log)
+profile=prefill dprank=0 upstream=10.0.5.153:8000
+profile=decode dprank=0 upstream=10.0.8.36:8000
+profile=prefill dprank=1 upstream=10.0.5.153:8000
+profile=decode dprank=1 upstream=10.0.8.36:8000
+profile=prefill dprank=0 upstream=10.0.5.153:8000
+profile=decode dprank=2 upstream=10.0.8.36:8000
+profile=prefill dprank=1 upstream=10.0.5.153:8000
+profile=decode dprank=3 upstream=10.0.8.36:8000
+profile=prefill dprank=0 upstream=10.0.5.153:8000
+profile=decode dprank=0 upstream=10.0.8.36:8000
+profile=prefill dprank=1 upstream=10.0.5.153:8000
+profile=decode dprank=1 upstream=10.0.8.36:8000
+profile=prefill dprank=0 upstream=10.0.5.153:8000
+profile=decode dprank=2 upstream=10.0.8.36:8000
+profile=prefill dprank=1 upstream=10.0.5.153:8000
+profile=decode dprank=3 upstream=10.0.8.36:8000
+
+== 3. vLLM ran each request on the picked engine
+-- prefill pod 10.0.5.153
+  engine=0 ran 4
+  engine=1 ran 4
+-- decode pod 10.0.8.36
+  engine=0 ran 2
+  engine=1 ran 2
+  engine=2 ran 2
+  engine=3 ran 2
+
+== 4. Decode read the prompt KV from prefill over NIXL, on all four engines
+vllm:prompt_tokens_by_source_total{engine="2",source="external_kv_transfer"} 40
+vllm:prompt_tokens_by_source_total{engine="3",source="external_kv_transfer"} 40
+vllm:prompt_tokens_by_source_total{engine="1",source="external_kv_transfer"} 40
+vllm:prompt_tokens_by_source_total{engine="0",source="external_kv_transfer"} 40
+```
+
+Changing the decode pod's annotation to `"2"` on the running pod removed its `rank-2` and `rank-3`
+endpoints from the EPP; setting it back to `"4"` restored them.
 
 ## Multi-node demo output
 
@@ -195,5 +250,6 @@ counters move. Decode reads every prompt from prefill over NIXL across pods.
 ```bash
 ./coordinator/teardown.sh
 ./sidecar/teardown.sh
+./mixed/teardown.sh
 ./multinode/teardown.sh
 ```

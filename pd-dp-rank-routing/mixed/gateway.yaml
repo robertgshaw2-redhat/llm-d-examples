@@ -1,0 +1,76 @@
+# Envoy gateway and coordinator. The coordinator calls back into Envoy once per
+# phase with x-llm-d-epp-profile set to prefill or decode, and Envoy hands each
+# phase to that phase's EPP.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpx-envoy
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dpx-envoy}
+  template:
+    metadata:
+      labels: {app: dpx-envoy}
+    spec:
+      containers:
+        - name: envoy
+          image: docker.io/envoyproxy/envoy:distroless-v1.33.2
+          args: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"]
+          ports:
+            - {containerPort: 8081, name: http}
+            - {containerPort: 19001, name: ready}
+          readinessProbe:
+            httpGet: {path: /ready, port: ready}
+            periodSeconds: 5
+          volumeMounts:
+            - {mountPath: /etc/envoy, name: config}
+      volumes:
+        - name: config
+          configMap: {name: dpx-envoy}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dpx-envoy
+spec:
+  selector: {app: dpx-envoy}
+  ports:
+    - {name: http, port: 8081}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpx-coordinator
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dpx-coordinator}
+  template:
+    metadata:
+      labels: {app: dpx-coordinator}
+    spec:
+      containers:
+        - name: coordinator
+          image: ghcr.io/llm-d/llm-d-router-coordinator:v1.0.0
+          args: ["--config", "/etc/coordinator/coordinator.yaml"]
+          ports:
+            - {containerPort: 8080, name: http}
+            - {containerPort: 9090, name: metrics}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+          volumeMounts:
+            - {mountPath: /etc/coordinator, name: config}
+      volumes:
+        - name: config
+          configMap: {name: dpx-coordinator}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dpx-coordinator
+spec:
+  selector: {app: dpx-coordinator}
+  ports:
+    - {name: http, port: 8080}
