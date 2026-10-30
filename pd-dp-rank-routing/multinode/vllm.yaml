@@ -1,0 +1,134 @@
+# DeepSeek-V2-Lite P/D where each phase is one data-parallel group spread over
+# two pods: DP=4, 2 ranks per pod (LWS size 2). Pod worker-index k runs a
+# vllm-rs frontend (VLLM_USE_RUST_FRONTEND=1) for global ranks 2k and 2k+1.
+# This manifest requests rdma/ib and sets NCCL_IB_HCA for kermit; drop them on
+# clusters without InfiniBand.
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: dpm-prefill
+spec:
+  replicas: 1
+  leaderWorkerTemplate:
+    size: 2
+    workerTemplate:
+      metadata:
+        labels: {app: dpm-vllm, llm-d.ai/role: prefill}
+      spec:
+        tolerations:
+          - {key: is_gpu, operator: Exists, effect: PreferNoSchedule}
+        containers:
+          - name: vllm
+            image: docker.io/vllm/vllm-openai:v0.32.0
+            command: ["/bin/bash", "-c"]
+            args:
+              - |-
+                set -euo pipefail
+                python3 -c "import nixl" 2>/dev/null || uv pip install --system nixl nixl-cu13
+                START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
+                # Hybrid LB: one vllm-rs frontend per pod in front of its local
+                # engines, global ranks START_RANK..START_RANK+DP_SIZE_LOCAL-1.
+                exec vllm serve deepseek-ai/DeepSeek-V2-Lite \
+                  --host 0.0.0.0 --port 8000 \
+                  --max-model-len 16384 \
+                  --data-parallel-hybrid-lb \
+                  --data-parallel-size $(( LWS_GROUP_SIZE * DP_SIZE_LOCAL )) \
+                  --data-parallel-size-local $DP_SIZE_LOCAL \
+                  --data-parallel-start-rank $START_RANK \
+                  --data-parallel-address $LWS_LEADER_ADDRESS \
+                  --data-parallel-rpc-port 5555 \
+                  --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+            env:
+              - {name: VLLM_USE_RUST_FRONTEND, value: "1"}
+              - {name: DP_SIZE_LOCAL, value: "2"}
+              - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+                valueFrom: {fieldRef: {fieldPath: status.podIP}}
+              - {name: HF_HUB_CACHE, value: /var/cache/huggingface}
+              - {name: NCCL_IB_HCA, value: ibp}
+            ports:
+              - {containerPort: 8000, name: http}
+            startupProbe:
+              httpGet: {path: /health, port: http}
+              periodSeconds: 5
+              failureThreshold: 360
+            readinessProbe:
+              httpGet: {path: /health, port: http}
+              periodSeconds: 5
+            resources:
+              requests: {cpu: "16", memory: 128Gi, nvidia.com/gpu: "2", rdma/ib: "2"}
+              limits: {memory: 128Gi, nvidia.com/gpu: "2", rdma/ib: "2"}
+            securityContext:
+              capabilities: {add: [IPC_LOCK, SYS_RAWIO]}
+            volumeMounts:
+              - {mountPath: /dev/shm, name: dshm}
+              - {mountPath: /var/cache/huggingface, name: hf-cache}
+        volumes:
+          - name: dshm
+            emptyDir: {medium: Memory, sizeLimit: 16Gi}
+          - name: hf-cache
+            emptyDir: {}
+---
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: dpm-decode
+spec:
+  replicas: 1
+  leaderWorkerTemplate:
+    size: 2
+    workerTemplate:
+      metadata:
+        labels: {app: dpm-vllm, llm-d.ai/role: decode}
+      spec:
+        tolerations:
+          - {key: is_gpu, operator: Exists, effect: PreferNoSchedule}
+        containers:
+          - name: vllm
+            image: docker.io/vllm/vllm-openai:v0.32.0
+            command: ["/bin/bash", "-c"]
+            args:
+              - |-
+                set -euo pipefail
+                python3 -c "import nixl" 2>/dev/null || uv pip install --system nixl nixl-cu13
+                START_RANK=$(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL ))
+                # Hybrid LB: one vllm-rs frontend per pod in front of its local
+                # engines, global ranks START_RANK..START_RANK+DP_SIZE_LOCAL-1.
+                exec vllm serve deepseek-ai/DeepSeek-V2-Lite \
+                  --host 0.0.0.0 --port 8000 \
+                  --max-model-len 16384 \
+                  --data-parallel-hybrid-lb \
+                  --data-parallel-size $(( LWS_GROUP_SIZE * DP_SIZE_LOCAL )) \
+                  --data-parallel-size-local $DP_SIZE_LOCAL \
+                  --data-parallel-start-rank $START_RANK \
+                  --data-parallel-address $LWS_LEADER_ADDRESS \
+                  --data-parallel-rpc-port 5555 \
+                  --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+            env:
+              - {name: VLLM_USE_RUST_FRONTEND, value: "1"}
+              - {name: DP_SIZE_LOCAL, value: "2"}
+              - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+                valueFrom: {fieldRef: {fieldPath: status.podIP}}
+              - {name: HF_HUB_CACHE, value: /var/cache/huggingface}
+              - {name: NCCL_IB_HCA, value: ibp}
+            ports:
+              - {containerPort: 8000, name: http}
+            startupProbe:
+              httpGet: {path: /health, port: http}
+              periodSeconds: 5
+              failureThreshold: 360
+            readinessProbe:
+              httpGet: {path: /health, port: http}
+              periodSeconds: 5
+            resources:
+              requests: {cpu: "16", memory: 128Gi, nvidia.com/gpu: "2", rdma/ib: "2"}
+              limits: {memory: 128Gi, nvidia.com/gpu: "2", rdma/ib: "2"}
+            securityContext:
+              capabilities: {add: [IPC_LOCK, SYS_RAWIO]}
+            volumeMounts:
+              - {mountPath: /dev/shm, name: dshm}
+              - {mountPath: /var/cache/huggingface, name: hf-cache}
+        volumes:
+          - name: dshm
+            emptyDir: {medium: Memory, sizeLimit: 16Gi}
+          - name: hf-cache
+            emptyDir: {}

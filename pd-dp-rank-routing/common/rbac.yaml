@@ -1,0 +1,55 @@
+# Read access the EPPs need for InferencePool discovery. Bind it to each
+# demo's EPP service account (dpc-epp, dps-epp, dpm-epp).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dp-rank-epp
+rules:
+  - apiGroups: [inference.networking.k8s.io]
+    resources: [inferencepools]
+    verbs: [get, list, watch]
+  - apiGroups: [llm-d.ai]
+    resources: [inferenceobjectives, inferencemodelrewrites]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dpc-epp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dpc-epp
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: dp-rank-epp}
+subjects:
+  - {kind: ServiceAccount, name: dpc-epp}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dps-epp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dps-epp
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: dp-rank-epp}
+subjects:
+  - {kind: ServiceAccount, name: dps-epp}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dpm-epp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dpm-epp
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: dp-rank-epp}
+subjects:
+  - {kind: ServiceAccount, name: dpm-epp}

@@ -1,0 +1,170 @@
+# One InferencePool and one EPP per phase. Each phase is one DP=4 group spread
+# over two pods (LWS size 2), 2 ranks per pod. Each EPP runs with
+# --data-parallel-ranks-per-port=2 and
+# --data-parallel-start-rank-label=leaderworkerset.sigs.k8s.io/worker-index, so
+# worker k's endpoints <pod>-rank-0 and <pod>-rank-1 carry global ranks 2k and
+# 2k+1. data-parallel-rank-header sends the global rank as x-data-parallel-rank,
+# and each endpoint reads vLLM's engine="<global rank>" metrics.
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: dpm-prefill
+spec:
+  selector:
+    matchLabels: {app: dpm-vllm, llm-d.ai/role: prefill}
+  targetPorts:
+    - number: 8000
+  endpointPickerRef:
+    name: dpm-epp-prefill
+    port: {number: 9002}
+---
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: dpm-decode
+spec:
+  selector:
+    matchLabels: {app: dpm-vllm, llm-d.ai/role: decode}
+  targetPorts:
+    - number: 8000
+  endpointPickerRef:
+    name: dpm-epp-decode
+    port: {number: 9002}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dpm-epp
+data:
+  config.yaml: |
+    apiVersion: llm-d.ai/v1
+    kind: EndpointPickerConfig
+    plugins:
+      - type: openai-parser
+      - type: data-parallel-rank-header
+      - type: approx-prefix-cache-producer
+      - type: prefix-cache-scorer
+      - type: queue-scorer
+      - type: inflight-load-producer
+      - type: active-request-scorer
+      - type: max-score-picker
+      - type: single-profile-handler
+    requestHandler:
+      parsers:
+        - pluginRef: openai-parser
+    schedulingProfiles:
+      - name: default
+        plugins:
+          - pluginRef: prefix-cache-scorer
+            weight: 2
+          - pluginRef: queue-scorer
+          - pluginRef: active-request-scorer
+          - pluginRef: max-score-picker
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpm-epp-prefill
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dpm-epp-prefill}
+  template:
+    metadata:
+      labels: {app: dpm-epp-prefill}
+    spec:
+      serviceAccountName: dpm-epp
+      containers:
+        - name: epp
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-390eb7da
+          imagePullPolicy: Always
+          args:
+            - --pool-name=dpm-prefill
+            - --pool-namespace=$(NAMESPACE)
+            - --config-file=/etc/epp/config.yaml
+            - --data-parallel-ranks-per-port=2
+            - --data-parallel-start-rank-label=leaderworkerset.sigs.k8s.io/worker-index
+            - --secure-serving=false
+            - --metrics-endpoint-auth=false
+            - --allow-experimental-plugins=true
+            - --grpc-port=9002
+            - --grpc-health-port=9003
+          env:
+            - name: NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+          ports:
+            - {containerPort: 9002, name: grpc}
+            - {containerPort: 9003, name: grpc-health}
+            - {containerPort: 9090, name: metrics}
+          readinessProbe:
+            grpc: {port: 9003, service: readiness}
+            periodSeconds: 5
+          volumeMounts:
+            - {mountPath: /etc/epp, name: config}
+      volumes:
+        - name: config
+          configMap: {name: dpm-epp}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dpm-epp-prefill
+spec:
+  selector: {app: dpm-epp-prefill}
+  ports:
+    - {name: grpc, port: 9002}
+    - {name: metrics, port: 9090}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpm-epp-decode
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dpm-epp-decode}
+  template:
+    metadata:
+      labels: {app: dpm-epp-decode}
+    spec:
+      serviceAccountName: dpm-epp
+      containers:
+        - name: epp
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-390eb7da
+          imagePullPolicy: Always
+          args:
+            - --pool-name=dpm-decode
+            - --pool-namespace=$(NAMESPACE)
+            - --config-file=/etc/epp/config.yaml
+            - --data-parallel-ranks-per-port=2
+            - --data-parallel-start-rank-label=leaderworkerset.sigs.k8s.io/worker-index
+            - --secure-serving=false
+            - --metrics-endpoint-auth=false
+            - --allow-experimental-plugins=true
+            - --grpc-port=9002
+            - --grpc-health-port=9003
+          env:
+            - name: NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+          ports:
+            - {containerPort: 9002, name: grpc}
+            - {containerPort: 9003, name: grpc-health}
+            - {containerPort: 9090, name: metrics}
+          readinessProbe:
+            grpc: {port: 9003, service: readiness}
+            periodSeconds: 5
+          volumeMounts:
+            - {mountPath: /etc/epp, name: config}
+      volumes:
+        - name: config
+          configMap: {name: dpm-epp}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dpm-epp-decode
+spec:
+  selector: {app: dpm-epp-decode}
+  ports:
+    - {name: grpc, port: 9002}
+    - {name: metrics, port: 9090}
