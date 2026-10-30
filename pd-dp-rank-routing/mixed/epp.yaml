@@ -25,7 +25,6 @@ data:
     kind: EndpointPickerConfig
     plugins:
       - type: openai-parser
-      - type: data-parallel-rank-header
       - type: approx-prefix-cache-producer
       - type: prefix-cache-scorer
       - type: queue-scorer
@@ -71,7 +70,7 @@ spec:
       serviceAccountName: dpx-epp
       containers:
         - name: epp
-          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-fe8f7e02
           imagePullPolicy: Always
           args:
             - --pool-name=dpx

@@ -47,7 +47,7 @@ static_resources:
                       "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
                       log_format:
                         text_format_source:
-                          inline_string: "%START_TIME% %REQ(:PATH)% dprank=%REQ(X-DATA-PARALLEL-RANK)% code=%RESPONSE_CODE% dropped=%RESP(X-LLM-D-REQUEST-DROPPED-REASON)% upstream=%UPSTREAM_HOST% dur=%DURATION%ms\n"
+                          inline_string: "%START_TIME% %REQ(:PATH)% dprank=%REQ(X-DATA-PARALLEL-RANK)% code=%RESPONSE_CODE% dropped=%RESP(X-LLM-D-REQUEST-DROPPED-REASON)% dest=%REQ(X-GATEWAY-DESTINATION-ENDPOINT)% upstream=%UPSTREAM_HOST% dur=%DURATION%ms\n"
                 route_config:
                   virtual_hosts:
                     - name: gateway

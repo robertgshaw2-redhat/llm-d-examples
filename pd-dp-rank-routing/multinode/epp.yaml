@@ -3,7 +3,7 @@
 # --data-parallel-size-local=2 and
 # --data-parallel-start-rank-label=leaderworkerset.sigs.k8s.io/worker-index, so
 # worker k's endpoints <pod>-rank-0 and <pod>-rank-1 carry global ranks 2k and
-# 2k+1. data-parallel-rank-header sends the global rank as x-data-parallel-rank,
+# 2k+1. The EPP sends the global rank as x-data-parallel-rank,
 # and each endpoint reads vLLM's engine="<global rank>" metrics.
 apiVersion: inference.networking.k8s.io/v1
 kind: InferencePool
@@ -41,7 +41,6 @@ data:
     kind: EndpointPickerConfig
     plugins:
       - type: openai-parser
-      - type: data-parallel-rank-header
       - type: approx-prefix-cache-producer
       - type: prefix-cache-scorer
       - type: queue-scorer
@@ -76,7 +75,7 @@ spec:
       serviceAccountName: dpm-epp
       containers:
         - name: epp
-          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-fe8f7e02
           imagePullPolicy: Always
           args:
             - --pool-name=dpm-prefill
@@ -130,7 +129,7 @@ spec:
       serviceAccountName: dpm-epp
       containers:
         - name: epp
-          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-fe8f7e02
           imagePullPolicy: Always
           args:
             - --pool-name=dpm-decode

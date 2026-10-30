@@ -1,0 +1,119 @@
+# DeepSeek-V2-Lite, one prefill pod and one decode pod, DP=2 per pod, P/D
+# through the routing sidecar with vLLM's OffloadingConnector: decode pulls the
+# prefill rank's KV from its P2P tier at 7777 + global rank. Each pod runs the vLLM Rust frontend (vllm-rs)
+# in front of two engine ranks. The prefill pod serves on 8000. The decode pod
+# runs the sidecar on 8000 in front of vLLM on 8200; the sidecar sends prefill
+# to the prefill pod, then decode to its local vLLM.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpo-prefill
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dpo-vllm, llm-d.ai/role: prefill}
+  template:
+    metadata:
+      labels: {app: dpo-vllm, llm-d.ai/role: prefill}
+    spec:
+      containers:
+        - name: vllm
+          image: docker.io/vllm/vllm-openai:v0.32.0
+          command: ["/bin/bash", "-c"]
+          args:
+            - |-
+              set -euo pipefail
+              VLLM_RS=$(python3 -c 'import os, vllm; print(os.path.join(os.path.dirname(vllm.__file__), "vllm-rs"))')
+              exec "$VLLM_RS" serve deepseek-ai/DeepSeek-V2-Lite \
+                --host 0.0.0.0 --port 8000 --grpc-port 50051 \
+                --data-parallel-size 2 \
+                --max-model-len 16384 \
+                --kv-transfer-config "{\"kv_connector\":\"OffloadingConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"spec_name\":\"TieringOffloadingSpec\",\"cpu_bytes_to_use\":4294967296,\"secondary_tiers\":[{\"type\":\"p2p\",\"host\":\"${POD_IP}\",\"port\":7777}]}}"
+          env:
+            - name: POD_IP
+              valueFrom: {fieldRef: {fieldPath: status.podIP}}
+            - {name: HF_HUB_CACHE, value: /var/cache/huggingface}
+          ports:
+            - {containerPort: 8000, name: http}
+            - {containerPort: 50051, name: grpc}
+          startupProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+            failureThreshold: 360
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: "16", memory: 128Gi, nvidia.com/gpu: "2"}
+            limits: {memory: 128Gi, nvidia.com/gpu: "2"}
+          volumeMounts:
+            - {mountPath: /dev/shm, name: dshm}
+            - {mountPath: /var/cache/huggingface, name: hf-cache}
+      volumes:
+        - name: dshm
+          emptyDir: {medium: Memory, sizeLimit: 16Gi}
+        # Replace with a PVC or hostPath to keep the weights across restarts.
+        - name: hf-cache
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dpo-decode
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dpo-vllm, llm-d.ai/role: decode}
+  template:
+    metadata:
+      labels: {app: dpo-vllm, llm-d.ai/role: decode}
+    spec:
+      containers:
+        - name: routing-sidecar
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-disagg-sidecar:dp-rank-fe8f7e02
+          imagePullPolicy: Always
+          args:
+            - --port=8000
+            - --model-server-port=8200
+            - --kv-connector=offloading
+            - --secure-serving=false
+          ports:
+            - {containerPort: 8000, name: sidecar-http}
+        - name: vllm
+          image: docker.io/vllm/vllm-openai:v0.32.0
+          command: ["/bin/bash", "-c"]
+          args:
+            - |-
+              set -euo pipefail
+              VLLM_RS=$(python3 -c 'import os, vllm; print(os.path.join(os.path.dirname(vllm.__file__), "vllm-rs"))')
+              exec "$VLLM_RS" serve deepseek-ai/DeepSeek-V2-Lite \
+                --host 0.0.0.0 --port 8200 --grpc-port 50051 \
+                --data-parallel-size 2 \
+                --max-model-len 16384 \
+                --kv-transfer-config "{\"kv_connector\":\"OffloadingConnector\",\"kv_role\":\"kv_both\",\"kv_connector_extra_config\":{\"spec_name\":\"TieringOffloadingSpec\",\"cpu_bytes_to_use\":4294967296,\"secondary_tiers\":[{\"type\":\"p2p\",\"host\":\"${POD_IP}\",\"port\":7777}]}}"
+          env:
+            - name: POD_IP
+              valueFrom: {fieldRef: {fieldPath: status.podIP}}
+            - {name: HF_HUB_CACHE, value: /var/cache/huggingface}
+          ports:
+            - {containerPort: 8200, name: http}
+            - {containerPort: 50051, name: grpc}
+          startupProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+            failureThreshold: 360
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: "16", memory: 128Gi, nvidia.com/gpu: "2"}
+            limits: {memory: 128Gi, nvidia.com/gpu: "2"}
+          volumeMounts:
+            - {mountPath: /dev/shm, name: dshm}
+            - {mountPath: /var/cache/huggingface, name: hf-cache}
+      volumes:
+        - name: dshm
+          emptyDir: {medium: Memory, sizeLimit: 16Gi}
+        # Replace with a PVC or hostPath to keep the weights across restarts.
+        - name: hf-cache
+          emptyDir: {}

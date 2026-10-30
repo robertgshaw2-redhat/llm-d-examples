@@ -24,7 +24,6 @@ data:
     kind: EndpointPickerConfig
     plugins:
       - type: openai-parser
-      - type: data-parallel-rank-header
       - type: token-producer
         parameters:
           modelName: deepseek-ai/DeepSeek-V2-Lite
@@ -81,7 +80,7 @@ spec:
       serviceAccountName: dpi-epp
       containers:
         - name: epp
-          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-2387e059
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-fe8f7e02
           imagePullPolicy: Always
           args:
             - --pool-name=dpi

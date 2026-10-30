@@ -1,7 +1,7 @@
 # One InferencePool and one EPP per phase. Each EPP runs with
 # --data-parallel-size-local=2, so every vLLM pod (one port, DP=2 behind
 # vllm-rs) becomes two endpoints, <pod>-rank-0 and <pod>-rank-1. Scorers see
-# each rank's own vLLM metrics (engine="<rank>"), and data-parallel-rank-header
+# each rank's own vLLM metrics (engine="<rank>"), and the EPP
 # sends the picked rank to vLLM as x-data-parallel-rank.
 apiVersion: inference.networking.k8s.io/v1
 kind: InferencePool
@@ -39,7 +39,6 @@ data:
     kind: EndpointPickerConfig
     plugins:
       - type: openai-parser
-      - type: data-parallel-rank-header
       - type: approx-prefix-cache-producer
       - type: prefix-cache-scorer
       - type: queue-scorer
@@ -74,7 +73,7 @@ spec:
       serviceAccountName: dpc-epp
       containers:
         - name: epp
-          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-fe8f7e02
           imagePullPolicy: Always
           args:
             - --pool-name=dpc-prefill
@@ -127,7 +126,7 @@ spec:
       serviceAccountName: dpc-epp
       containers:
         - name: epp
-          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-fe8f7e02
           imagePullPolicy: Always
           args:
             - --pool-name=dpc-decode

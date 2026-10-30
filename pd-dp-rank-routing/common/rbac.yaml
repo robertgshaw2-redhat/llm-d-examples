@@ -1,5 +1,5 @@
 # Read access the EPPs need for InferencePool discovery. Bind it to each
-# demo's EPP service account (dpc-epp, dps-epp, dpm-epp, dpx-epp, dpk-epp, dpg-epp, dpr-epp, dpi-epp).
+# demo's EPP service account (dpc-epp, dps-epp, dpm-epp, dpx-epp, dpk-epp, dpg-epp, dpr-epp, dpi-epp, dpo-epp).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -118,3 +118,16 @@ metadata:
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: dp-rank-epp}
 subjects:
   - {kind: ServiceAccount, name: dpi-epp}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dpo-epp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dpo-epp
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: dp-rank-epp}
+subjects:
+  - {kind: ServiceAccount, name: dpo-epp}

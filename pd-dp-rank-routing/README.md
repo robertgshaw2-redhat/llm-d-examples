@@ -13,7 +13,7 @@ The routing comes from llm-d-router branch
 | Piece | What it does |
 |---|---|
 | `llm-d.ai/data-parallel-size-local: "2"` (pod annotation) or `--data-parallel-size-local=2` (EPP flag, default for pods without the annotation) | Each pod becomes two endpoints, `<pod>-rank-0` and `<pod>-rank-1`, on its one target port. The value is the pod's vLLM `--data-parallel-size-local`. |
-| `data-parallel-rank-header` (EPP plugin) | Writes the picked endpoint's rank to `x-data-parallel-rank`. vLLM sends the request to that engine. |
+| Rank header (built into the EPP) | For a rank endpoint, the EPP writes the picked rank to `x-data-parallel-rank` and sends the request to that pod only, without fallbacks. vLLM sends the request to that engine. |
 | Per-rank metrics | vLLM labels its metrics `engine="<rank>"`. Each rank endpoint reads only its own series, so queue and KV-cache scorers see each rank's load. |
 | Per-rank scheduling state | In-flight counts and approximate prefix-cache state are kept per rank endpoint, so a shared prefix sticks to the rank that holds it. |
 | `x-llm-d-prefiller-data-parallel-rank` | In sidecar P/D, carries the prefill rank to the decode pod's sidecar, which sets it as `x-data-parallel-rank` on the prefill request. |
@@ -45,6 +45,7 @@ client                                         client
 | `vllm-internal-lb/` | One DP=4 group over two pods in vLLM's internal load-balancing mode: a single Rust frontend on the leader, headless engines on the worker. No P/D. `deploy.sh`, `demo.sh`, `teardown.sh` |
 | `sglang-multinode/` | SGLang v0.5.22, one DP-attention group (DP=4) over two pods with HTTP on the leader only. The EPP reads every rank's load from the leader's `/v1/loads?format=prometheus`. No P/D. `deploy.sh`, `teardown.sh` |
 | `sglang-per-rank-listeners/` | SGLang v0.5.22 with `SGLANG_RUST_SERVER=1`: every rank serves HTTP on its own pod at `8000 + node-local rank`, in a one-port-per-rank InferencePool. No P/D. `deploy.sh`, `teardown.sh` |
+| `sidecar-p2p/` | Sidecar P/D over vLLM's OffloadingConnector P2P tier: decode pulls the prefill rank's KV from port 7777 + rank. `deploy.sh`, `teardown.sh` |
 | `multinode/` | Coordinator P/D where each phase is one DP=4 group over two pods (LeaderWorkerSet, 2 ranks per pod), EPPs with `--data-parallel-start-rank-label`, `deploy.sh`, `demo.sh`, `teardown.sh` |
 
 ## Prerequisites
@@ -79,6 +80,7 @@ Each script uses the current kubectl context and namespace; set `CTX` and `NS` t
 ./vllm-internal-lb/deploy.sh && ./vllm-internal-lb/demo.sh
 ./sglang-multinode/deploy.sh
 ./sglang-per-rank-listeners/deploy.sh
+./sidecar-p2p/deploy.sh
 ```
 
 The demos send a few chat completions and print evidence. vLLM counters are cumulative, so run
@@ -472,4 +474,5 @@ no rank header):
 ./vllm-internal-lb/teardown.sh
 ./sglang-multinode/teardown.sh
 ./sglang-per-rank-listeners/teardown.sh
+./sidecar-p2p/teardown.sh
 ```

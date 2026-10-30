@@ -24,7 +24,6 @@ data:
     kind: EndpointPickerConfig
     plugins:
       - type: openai-parser
-      - type: data-parallel-rank-header
       - type: token-producer
         parameters:
           modelName: deepseek-ai/DeepSeek-V2-Lite
@@ -96,7 +95,7 @@ spec:
       serviceAccountName: dpg-epp
       containers:
         - name: epp
-          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-b329d2fe
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-fe8f7e02
           imagePullPolicy: Always
           args:
             - --pool-name=dpg

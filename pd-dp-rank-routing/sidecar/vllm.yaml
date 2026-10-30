@@ -70,7 +70,7 @@ spec:
     spec:
       containers:
         - name: routing-sidecar
-          image: ghcr.io/robertgshaw2-redhat/llm-d-router-disagg-sidecar:dp-rank-851a0215
+          image: ghcr.io/robertgshaw2-redhat/llm-d-router-disagg-sidecar:dp-rank-fe8f7e02
           imagePullPolicy: Always
           args:
             - --port=8000
