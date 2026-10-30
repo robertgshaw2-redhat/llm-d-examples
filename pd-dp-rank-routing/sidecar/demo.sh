@@ -40,3 +40,25 @@ PREFIX=$(printf 'You are a careful assistant. %.0s' $(seq 1 60))
 start=$(phase_log_lines dps-envoy)
 for i in 1 2 3 4; do chat "$URL" "${PREFIX}Question $i: name a color." >/dev/null; done
 show_phase_log dps-envoy "$start" 4
+
+echo
+echo "== 5. Prefill and decode ranks are picked separately"
+echo "Load decode engine 0 directly, so decode avoids it while prefill keeps alternating."
+"${K[@]}" delete pod dps-flood --ignore-not-found >/dev/null
+"${K[@]}" run dps-flood --restart=Never --image=curlimages/curl:8.10.1 --command -- sh -c \
+  "for i in \$(seq 1 24); do curl -s -o /dev/null -m 900 http://$DECODE:8200/v1/chat/completions \
+     -H 'content-type: application/json' -H 'x-data-parallel-rank: 0' \
+     -d '{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"Flood\"}],\"max_tokens\":3000,\"ignore_eos\":true}' & done; wait" >/dev/null
+"${K[@]}" wait --for=condition=Ready pod/dps-flood --timeout=120s >/dev/null
+sleep 10
+prefill_before=$(engine_success "$PREFILL" 8000)
+start=$(phase_log_lines dps-envoy)
+for i in 1 2 3 4 5 6; do chat "$URL" "Split request $i: name a planet." >/dev/null; done
+show_phase_log dps-envoy "$start" 6 | tee /tmp/dps-demo-split.txt
+echo "-- ranks the EPP picked (prefill / decode):"
+sed -nE 's/.*prefill_dprank=([0-9]+) dprank=([0-9]+).*/  prefill \1 \/ decode \2/p' /tmp/dps-demo-split.txt | sort | uniq -c
+echo "-- prefill ranks the EPP picked:"
+sed -nE 's/.*prefill_dprank=([0-9]+).*/  prefill rank \1/p' /tmp/dps-demo-split.txt | sort | uniq -c
+echo "-- prefill pod $PREFILL, requests per engine (must match the prefill ranks above):"
+engine_delta "$prefill_before" "$(engine_success "$PREFILL" 8000)"
+"${K[@]}" delete pod dps-flood --ignore-not-found --wait=false >/dev/null

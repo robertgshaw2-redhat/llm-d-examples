@@ -77,7 +77,6 @@ spec:
             - --model-server-port=8200
             - --kv-connector=nixlv2
             - --secure-serving=false
-            - --v=4
           ports:
             - {containerPort: 8000, name: sidecar-http}
         - name: vllm

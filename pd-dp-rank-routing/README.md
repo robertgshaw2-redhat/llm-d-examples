@@ -115,7 +115,71 @@ the reuse. The decode pod's prompt tokens all come from `external_kv_transfer`, 
 
 ## Sidecar demo output
 
-Not run yet. The sidecar demo deploys, but its run is pending a public sidecar image.
+One EPP schedules decode and prefill in one run. The decode rank reaches the decode pod's sidecar
+in `x-data-parallel-rank`; the prefill rank reaches it in `x-llm-d-prefiller-data-parallel-rank`,
+and the sidecar sets it as `x-data-parallel-rank` on the prefill request. EPP image built at
+`a61396f6`, sidecar image built at `851a0215`.
+
+Sections 1-4 pick the same rank for both phases, which does not show which header the prefill
+worker received. Section 5 loads decode engine 0 directly, so decode moves to rank 1 while prefill
+keeps alternating. The prefill engines then run 3 requests each, matching the prefill ranks; if the
+sidecar sent the decode rank to the prefill worker, prefill engine 1 would run all 6.
+
+The vLLM counters in section 3 are cumulative and include the direct load requests.
+
+```
+== 1. Each request: prefill rank and decode rank the EPP picked (Envoy log)
+prefill=10.0.10.81:8000 prefill_dprank=0 dprank=0 upstream=10.0.3.245:8000
+prefill=10.0.10.81:8000 prefill_dprank=1 dprank=1 upstream=10.0.3.245:8000
+prefill=10.0.10.81:8000 prefill_dprank=0 dprank=0 upstream=10.0.3.245:8000
+prefill=10.0.10.81:8000 prefill_dprank=1 dprank=1 upstream=10.0.3.245:8000
+prefill=10.0.10.81:8000 prefill_dprank=0 dprank=0 upstream=10.0.3.245:8000
+prefill=10.0.10.81:8000 prefill_dprank=1 dprank=1 upstream=10.0.3.245:8000
+
+== 2. vLLM ran each phase on the rank the EPP picked
+-- picked by the EPP:
+   3   prefill rank 0
+   3   prefill rank 1
+   3   decode rank 0
+   3   decode rank 1
+-- prefill pod 10.0.10.81, requests per engine:
+  engine=0 ran 3
+  engine=1 ran 3
+-- decode pod 10.0.3.245, requests per engine:
+  engine=0 ran 3
+  engine=1 ran 3
+
+== 3. Decode read the prompt KV from prefill over NIXL, on both engines
+vllm:prompt_tokens_by_source_total{engine="0",source="local_cache_hit"} 4896
+vllm:prompt_tokens_by_source_total{engine="1",source="local_cache_hit"} 144
+vllm:prompt_tokens_by_source_total{engine="1",source="external_kv_transfer"} 241
+vllm:prompt_tokens_by_source_total{engine="0",source="local_compute"} 1126
+vllm:prompt_tokens_by_source_total{engine="0",source="external_kv_transfer"} 692
+
+== 4. A shared long prefix sticks to one prefill rank and one decode rank
+prefill=10.0.10.81:8000 prefill_dprank=0 dprank=0 upstream=10.0.3.245:8000
+prefill=10.0.10.81:8000 prefill_dprank=0 dprank=0 upstream=10.0.3.245:8000
+prefill=10.0.10.81:8000 prefill_dprank=0 dprank=0 upstream=10.0.3.245:8000
+prefill=10.0.10.81:8000 prefill_dprank=0 dprank=0 upstream=10.0.3.245:8000
+
+== 5. Prefill and decode ranks are picked separately
+Load decode engine 0 directly, so decode avoids it while prefill keeps alternating.
+prefill=10.0.10.81:8000 prefill_dprank=0 dprank=1 upstream=10.0.3.245:8000
+prefill=10.0.10.81:8000 prefill_dprank=1 dprank=1 upstream=10.0.3.245:8000
+prefill=10.0.10.81:8000 prefill_dprank=0 dprank=1 upstream=10.0.3.245:8000
+prefill=10.0.10.81:8000 prefill_dprank=1 dprank=1 upstream=10.0.3.245:8000
+prefill=10.0.10.81:8000 prefill_dprank=0 dprank=1 upstream=10.0.3.245:8000
+prefill=10.0.10.81:8000 prefill_dprank=1 dprank=1 upstream=10.0.3.245:8000
+-- ranks the EPP picked (prefill / decode):
+   3   prefill 0 / decode 1
+   3   prefill 1 / decode 1
+-- prefill ranks the EPP picked:
+   3   prefill rank 0
+   3   prefill rank 1
+-- prefill pod 10.0.10.81, requests per engine (must match the prefill ranks above):
+  engine=0 ran 3
+  engine=1 ran 3
+```
 
 ## KV events and load demo output
 

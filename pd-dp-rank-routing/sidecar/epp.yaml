@@ -32,6 +32,7 @@ data:
       - type: approx-prefix-cache-producer
       - type: prefix-cache-scorer
       - type: queue-scorer
+      - type: running-requests-size-scorer
       - type: inflight-load-producer
       - type: active-request-scorer
       - type: prefill-filter
@@ -52,6 +53,8 @@ data:
           - pluginRef: prefix-cache-scorer
             weight: 2
           - pluginRef: queue-scorer
+          - pluginRef: running-requests-size-scorer
+            weight: 2
           - pluginRef: active-request-scorer
           - pluginRef: max-score-picker
       - name: decode
@@ -60,6 +63,8 @@ data:
           - pluginRef: prefix-cache-scorer
             weight: 2
           - pluginRef: queue-scorer
+          - pluginRef: running-requests-size-scorer
+            weight: 2
           - pluginRef: active-request-scorer
           - pluginRef: max-score-picker
 ---
