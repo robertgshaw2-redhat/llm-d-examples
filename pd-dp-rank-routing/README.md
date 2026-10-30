@@ -41,13 +41,14 @@ client                                         client
 | `sidecar/` | vLLM pods (the decode pod runs the routing sidecar), one InferencePool and EPP with `disagg-profile-handler`, Envoy, `deploy.sh`, `demo.sh`, `teardown.sh` |
 | `mixed/` | Coordinator P/D with prefill DP=2 and decode DP=4 in one InferencePool behind one EPP (`header-profile-handler`), rank counts set per pod with the `llm-d.ai/data-parallel-size-local` annotation, `deploy.sh`, `demo.sh`, `teardown.sh` |
 | `kvevents/` | The `multinode/` layout with vLLM KV events and the precise prefix cache (token-producer with a `vllm launch render` sidecar), plus a per-rank load test, `deploy.sh`, `demo.sh`, `teardown.sh` |
+| `vllm-internal-lb/` | One DP=4 group over two pods in vLLM's internal load-balancing mode: a single Rust frontend on the leader, headless engines on the worker. No P/D. `deploy.sh`, `demo.sh`, `teardown.sh` |
 | `multinode/` | Coordinator P/D where each phase is one DP=4 group over two pods (LeaderWorkerSet, 2 ranks per pod), EPPs with `--data-parallel-start-rank-label`, `deploy.sh`, `demo.sh`, `teardown.sh` |
 
 ## Prerequisites
 
 - A Kubernetes cluster with the InferencePool CRD (`inference.networking.k8s.io/v1`) and 4 free
-  NVIDIA GPUs per demo (2 per vLLM pod; 6 for `mixed/`, 8 for `multinode/` and `kvevents/`). Tested on H200s.
-- For `multinode/` and `kvevents/`: the LeaderWorkerSet CRD (`leaderworkerset.x-k8s.io/v1`).
+  NVIDIA GPUs per demo (2 per vLLM pod; 6 for `mixed/`, 8 for `multinode/` and `kvevents/`, 4 for `vllm-internal-lb/`). Tested on H200s.
+- For `multinode/`, `kvevents/` and `vllm-internal-lb/`: the LeaderWorkerSet CRD (`leaderworkerset.x-k8s.io/v1`).
 - Images:
   - `docker.io/vllm/vllm-openai:v0.32.0`
   - `ghcr.io/robertgshaw2-redhat/llm-d-router-endpoint-picker:dp-rank-a61396f6`, built from the
@@ -71,6 +72,7 @@ Each script uses the current kubectl context and namespace; set `CTX` and `NS` t
 ./mixed/deploy.sh && ./mixed/demo.sh
 ./kvevents/deploy.sh && ./kvevents/demo.sh
 ./multinode/deploy.sh && ./multinode/demo.sh
+./vllm-internal-lb/deploy.sh && ./vllm-internal-lb/demo.sh
 ```
 
 The demos send a few chat completions and print evidence. vLLM counters are cumulative, so run
@@ -287,6 +289,61 @@ Changing the decode pod's annotation to `"2"` on the running pod (tested at `37c
 annotation was renamed from `llm-d.ai/data-parallel-ranks`) removed its `rank-2` and `rank-3`
 endpoints from the EPP; setting it back to `"4"` restored them.
 
+## vLLM internal load balancing demo output
+
+One DP=4 group over a LeaderWorkerSet of two pods with 2 GPUs each, without P/D. The leader runs
+`vllm serve --data-parallel-size 4 --data-parallel-size-local 2` with the Rust frontend for all four
+engines; the worker runs `--headless --data-parallel-start-rank 2` for engines 2 and 3. The
+InferencePool selects only the leader, annotated `llm-d.ai/data-parallel-size-local: "4"`, so the
+EPP splits it into rank endpoints 0-3, which are the global ranks. EPP image built at `2387e059`.
+
+- Requests reach every engine through the leader, including engines 2 and 3 on the worker pod.
+- The leader's `/metrics` reports every engine, so load on a remote engine is seen and avoided.
+- KV events do not reach the EPP for engines 2 and 3: they publish on the worker pod's IP, and the
+  EPP only knows the leader's. Precise prefix-cache scoring therefore covers engines 0 and 1 only.
+
+```
+== 1. Requests go to global ranks 0-3, including engines on the worker pod
+  dprank=2 upstream=10.0.2.199:8000
+  dprank=3 upstream=10.0.2.199:8000
+  dprank=0 upstream=10.0.2.199:8000
+  dprank=1 upstream=10.0.2.199:8000
+  dprank=2 upstream=10.0.2.199:8000
+  dprank=3 upstream=10.0.2.199:8000
+  dprank=0 upstream=10.0.2.199:8000
+  dprank=1 upstream=10.0.2.199:8000
+-- requests per engine (leader /metrics):
+  engine=0 ran 2
+  engine=1 ran 2
+  engine=2 ran 2
+  engine=3 ran 2
+
+== 2. The leader's /metrics covers every engine, so a busy remote engine is avoided
+-- running requests per engine (leader /metrics) while engine 2 is loaded directly:
+  engine=0 running 0
+  engine=1 running 0
+  engine=2 running 24
+  engine=3 running 0
+-- ranks the EPP picked for 6 new requests:
+     2 dprank=0
+     2 dprank=1
+     2 dprank=3
+
+== 3. KV events: engines publish on their own pod, but the EPP only knows the leader
+  publisher listening on 10.0.2.199:5557
+  publisher listening on 10.0.2.199:5558
+  publisher listening on 10.0.1.77:5559
+  publisher listening on 10.0.1.77:5560
+-- EPP subscribers:
+  dpi-vllm-0-rank-0 -> tcp://10.0.2.199:5557
+  dpi-vllm-0-rank-1 -> tcp://10.0.2.199:5558
+  dpi-vllm-0-rank-2 -> tcp://10.0.2.199:5559
+  dpi-vllm-0-rank-3 -> tcp://10.0.2.199:5560
+-- KV-event batches received per subscriber (ranks 2 and 3 never connect):
+  llm_d_epp_kv_cache_events_messages_received_total{pod_identifier="robshaw-dev/dpi-vllm-0-rank-0"} 2
+  llm_d_epp_kv_cache_events_messages_received_total{pod_identifier="robshaw-dev/dpi-vllm-0-rank-1"} 2
+```
+
 ## Multi-node demo output
 
 Each phase runs one DP=4 group as a LeaderWorkerSet of two pods with 2 GPUs each. Pod
@@ -374,4 +431,5 @@ counters move. Decode reads every prompt from prefill over NIXL across pods.
 ./mixed/teardown.sh
 ./kvevents/teardown.sh
 ./multinode/teardown.sh
+./vllm-internal-lb/teardown.sh
 ```

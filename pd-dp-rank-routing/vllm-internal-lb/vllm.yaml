@@ -1,0 +1,60 @@
+# vLLM internal load balancing across pods: one DP group (DP=4) over two pods
+# with 2 GPUs each. The leader runs vLLM's Rust frontend for all four engines;
+# the worker runs headless engines for global ranks 2 and 3, which connect to
+# the leader. Each engine publishes KV events on 5557 + its global rank, on its
+# own pod.
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: dpi-vllm
+spec:
+  replicas: 1
+  leaderWorkerTemplate:
+    size: 2
+    workerTemplate:
+      metadata:
+        labels: {app: dpi-vllm}
+        annotations: {llm-d.ai/data-parallel-size-local: "4"}
+      spec:
+        tolerations:
+          - {key: is_gpu, operator: Exists, effect: PreferNoSchedule}
+        containers:
+          - name: vllm
+            image: docker.io/vllm/vllm-openai:v0.32.0
+            command: ["/bin/bash", "-c"]
+            args:
+              - |-
+                set -euo pipefail
+                ARGS=(deepseek-ai/DeepSeek-V2-Lite
+                  --max-model-len 16384
+                  --block-size 64
+                  --data-parallel-size 4
+                  --data-parallel-size-local 2
+                  --data-parallel-address "$LWS_LEADER_ADDRESS"
+                  --data-parallel-rpc-port 5555
+                  --kv-events-config '{"enable_kv_cache_events":true,"publisher":"zmq","endpoint":"tcp://*:5557","topic":"kv@'"$POD_IP"':8000@deepseek-ai/DeepSeek-V2-Lite"}')
+                if [ "${LWS_WORKER_INDEX:-0}" = 0 ]; then
+                  exec vllm serve "${ARGS[@]}" --host 0.0.0.0 --port 8000
+                fi
+                exec vllm serve "${ARGS[@]}" --headless --data-parallel-start-rank $(( LWS_WORKER_INDEX * 2 ))
+            env:
+              - {name: VLLM_USE_RUST_FRONTEND, value: "1"}
+              - name: POD_IP
+                valueFrom: {fieldRef: {fieldPath: status.podIP}}
+              - {name: HF_HUB_CACHE, value: /var/cache/huggingface}
+              - {name: NCCL_IB_HCA, value: ibp}
+            ports:
+              - {containerPort: 8000, name: http}
+            resources:
+              requests: {cpu: "16", memory: 128Gi, nvidia.com/gpu: "2", rdma/ib: "2"}
+              limits: {memory: 128Gi, nvidia.com/gpu: "2", rdma/ib: "2"}
+            securityContext:
+              capabilities: {add: [IPC_LOCK, SYS_RAWIO]}
+            volumeMounts:
+              - {mountPath: /dev/shm, name: dshm}
+              - {mountPath: /var/cache/huggingface, name: hf-cache}
+        volumes:
+          - name: dshm
+            emptyDir: {medium: Memory, sizeLimit: 16Gi}
+          - name: hf-cache
+            emptyDir: {}
